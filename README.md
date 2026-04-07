@@ -55,9 +55,9 @@ MoM/
 
 | Workstream | Focus | Owner |
 |------------|-------|-------|
-| A | KV retention policy via Offloading Connector | TBD |
-| B | KV cache quantization (INT8/INT4) | TBD |
-| C | torch.compile + profiling infrastructure | TBD |
+| A | KV retention policy via Offloading Connector | Daksh |
+| B | KV cache quantization (INT8/INT4) | Vats |
+| C | torch.compile + profiling infrastructure | Andrew |
 | D | End-to-end evaluation | Alexander |
 | E | MoM extension (stretch goal) | Alexander |
 
