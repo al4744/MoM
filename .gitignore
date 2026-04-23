@@ -3,8 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-dist/
-build/
+/dist/
+/build/
 *.egg
 
 # Virtual environments
@@ -29,15 +29,15 @@ profiling/*.trace
 profiling/*.nsys-rep
 profiling/*.qdrep
 
-# Model weights (download separately)
-models/
+# Model weights (download separately, root-level only)
+/models/
 *.bin
 *.safetensors
 *.pt
 *.pth
 
 # Traces (generated, can be large)
-traces/
+/traces/
 
 # WandB
 wandb/
@@ -48,3 +48,11 @@ wandb/
 # Misc
 *.log
 *.tmp
+
+# vLLM build artifacts (generated during pip install -e)
+vllm/build/
+vllm/dist/
+vllm/*.egg-info/
+*.so
+*.o
+*.a

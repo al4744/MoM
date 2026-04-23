@@ -1,11 +1,15 @@
-# Core serving
-vllm>=0.4.0
-torch>=2.2.0
+# =============================================================================
+# MoM Project Dependencies
+# =============================================================================
+# vLLM is vendored in ./vllm/ (v0.6.4.post1) — install via:
+#   cd vllm && pip install -e . && cd ..
+# See README.md for full setup instructions.
+# =============================================================================
 
 # Agent frameworks
 langchain>=0.1.0
 
-# KV cache management
+# KV cache management (comparison baseline)
 lmcache>=0.1.0
 
 # Experiment tracking
@@ -17,10 +21,10 @@ tensorboard>=2.15.0
 # Benchmarks
 datasets>=2.16.0
 
-# Quantization
+# Quantization utilities
 bitsandbytes>=0.42.0
 
-# MoM extension
+# MoM extension (Workstream E)
 faiss-cpu>=1.7.4
 scikit-learn>=1.4.0
 rank-bm25>=0.2.2
