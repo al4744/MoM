@@ -43,14 +43,14 @@ Mistral 7B) defines the full experimental matrix.
 
 ```bash
 # 1. Run one config across its traces
-python evaluation/run_eval.py \
+python3 evaluation/run_eval.py \
     --config configs/baseline.yaml \
     --output results/baseline/
 
 # 2. Repeat for every config in the matrix above
 
 # 3. Emit the cross-config comparison table
-python evaluation/comparison_table.py \
+python3 evaluation/comparison_table.py \
     --results-root results/ \
     --output results/comparison.md
 ```

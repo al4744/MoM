@@ -12,7 +12,7 @@
 #   make clean         # remove results_dry/, results_quant/ and __pycache__
 # =============================================================================
 
-PYTHON ?= python
+PYTHON ?= python3
 RESULTS ?= results_dry
 REAL_RESULTS ?= results_quant
 CONFIGS := $(wildcard configs/*.yaml)
