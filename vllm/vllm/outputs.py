@@ -103,6 +103,7 @@ class RequestOutput:
         encoder_prompt: Optional[str] = None,
         encoder_prompt_token_ids: Optional[List[int]] = None,
         num_cached_tokens: Optional[int] = None,
+        program_id: Optional[str] = None,
     ) -> None:
         self.request_id = request_id
         self.prompt = prompt
@@ -115,6 +116,7 @@ class RequestOutput:
         self.encoder_prompt = encoder_prompt
         self.encoder_prompt_token_ids = encoder_prompt_token_ids
         self.num_cached_tokens = num_cached_tokens
+        self.program_id = program_id
 
     @classmethod
     def new(
@@ -278,7 +280,8 @@ class RequestOutput:
         init_args = (seq_group.request_id, prompt, prompt_token_ids,
                      prompt_logprobs, outputs, finished, seq_group.metrics,
                      seq_group.lora_request, encoder_prompt,
-                     encoder_prompt_token_ids, num_cached_tokens)
+                     encoder_prompt_token_ids, num_cached_tokens,
+                     getattr(seq_group, "program_id", None))
 
         if use_cache:
             request_output = seq_group.cached_request_output
