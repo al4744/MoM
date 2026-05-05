@@ -3,6 +3,21 @@ from typing import List
 
 import torch
 
+try:
+    from src.quantization.config import KVQuantConfig
+    from src.quantization.quantizer import (
+        dequantize_int4,
+        dequantize_int8,
+        quantize_int4,
+        quantize_int8,
+    )
+    from src.quantization.types import QuantizedBlock
+    _KV_QUANT_AVAILABLE = True
+except ImportError:
+    _KV_QUANT_AVAILABLE = False
+    KVQuantConfig = None  # type: ignore[assignment,misc]
+    QuantizedBlock = None  # type: ignore[assignment,misc]
+
 from vllm.attention import get_attn_backend
 from vllm.config import CacheConfig, DeviceConfig, ModelConfig, ParallelConfig
 from vllm.logger import init_logger
@@ -62,6 +77,9 @@ class CacheEngine:
         self.gpu_cache = self._allocate_kv_cache(
             self.num_gpu_blocks, self.device_config.device_type)
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
+        _default = KVQuantConfig(enabled=False) if _KV_QUANT_AVAILABLE else None
+        self.kv_quant_config = getattr(self.cache_config, "kv_quant_config", _default)
+        self.quantized_cpu_cache: dict = {}
 
     def _allocate_kv_cache(
         self,
@@ -85,14 +103,41 @@ class CacheEngine:
         return kv_cache
 
     def swap_in(self, src_to_dst: torch.Tensor) -> None:
+        if getattr(self.kv_quant_config, "enabled", False):
+            self.swap_in_dequantized(src_to_dst)
+            return
         for i in range(self.num_attention_layers):
             self.attn_backend.swap_blocks(self.cpu_cache[i], self.gpu_cache[i],
                                           src_to_dst)
 
     def swap_out(self, src_to_dst: torch.Tensor) -> None:
+        if getattr(self.kv_quant_config, "enabled", False):
+            self.swap_out_quantized(src_to_dst)
+            return
         for i in range(self.num_attention_layers):
             self.attn_backend.swap_blocks(self.gpu_cache[i], self.cpu_cache[i],
                                           src_to_dst)
+
+    def swap_out_quantized(self, src_to_dst: torch.Tensor) -> None:
+        mode = self.kv_quant_config.mode
+        for i in range(self.num_attention_layers):
+            for src, dst in src_to_dst.tolist():
+                block = self.gpu_cache[i][src].detach()
+                qblock = quantize_int8(block) if mode == "int8" else quantize_int4(block)
+                self.quantized_cpu_cache[(i, dst)] = qblock
+
+    def swap_in_dequantized(self, src_to_dst: torch.Tensor) -> None:
+        mode = self.kv_quant_config.mode
+        for i in range(self.num_attention_layers):
+            for src, dst in src_to_dst.tolist():
+                qblock = self.quantized_cpu_cache.get((i, src))
+                if qblock is None:
+                    # Fallback if a block was never quantized (mixed mode / warmup).
+                    self.attn_backend.swap_blocks(self.cpu_cache[i], self.gpu_cache[i],
+                                                  torch.tensor([[src, dst]], dtype=torch.int64))
+                    continue
+                block = dequantize_int8(qblock) if mode == "int8" else dequantize_int4(qblock)
+                self.gpu_cache[i][dst].copy_(block.to(device=self.gpu_cache[i].device))
 
     def copy(self, src_to_dsts: torch.Tensor) -> None:
         self.attn_backend.copy_blocks(self.gpu_cache, src_to_dsts)

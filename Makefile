@@ -4,27 +4,30 @@
 # Usage:
 #   make test          # run unit tests
 #   make eval-baseline # dry-run baseline config
-#   make eval-all      # dry-run every config under configs/
-#   make compare       # cross-config comparison table from results/
+#   make eval-all      # dry-run every config under configs/  → results_dry/
+#   make compare       # cross-config comparison table from results_dry/
 #   make ablate A=baseline B=retention   # pairwise delta
-#   make clean         # remove results/ and __pycache__
+#   make eval-all-real # real runs for quant configs          → results_quant/
+#   make compare-real  # comparison table from results_quant/
+#   make clean         # remove results_dry/, results_quant/ and __pycache__
 # =============================================================================
 
 PYTHON ?= python
-RESULTS ?= results
+RESULTS ?= results_dry
+REAL_RESULTS ?= results_quant
 CONFIGS := $(wildcard configs/*.yaml)
 
-.PHONY: test test-quick eval-baseline eval-retention eval-all smoke smoke-baseline smoke-retention compare ablate clean
+.PHONY: test test-quick eval-baseline eval-retention eval-all eval-all-real smoke smoke-baseline smoke-retention compare compare-real ablate ablate-real clean
 
 # ----------------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------------
 
 test:
-	PYTHONPATH=. $(PYTHON) -m pytest evaluation/tests/ -v
+	PYTHONPATH=. $(PYTHON) -m pytest evaluation/tests/ src/retention/tests/ src/quantization/tests/ -v
 
 test-quick:
-	PYTHONPATH=. $(PYTHON) -m pytest evaluation/tests/ -q
+	PYTHONPATH=. $(PYTHON) -m pytest evaluation/tests/ src/retention/tests/ src/quantization/tests/ -q
 
 # ----------------------------------------------------------------------------
 # Eval runs (dry-run mode until A/B/C engine hooks land)
@@ -72,6 +75,21 @@ eval-all:
 			--dry-run; \
 	done
 
+# Non-dry evaluation matrix for the main paper configs.
+eval-all-real:
+	PYTHONPATH=. $(PYTHON) evaluation/run_eval.py \
+		--config configs/baseline.yaml \
+		--output $(REAL_RESULTS)/baseline
+	PYTHONPATH=. $(PYTHON) evaluation/run_eval.py \
+		--config configs/retention.yaml \
+		--output $(REAL_RESULTS)/retention
+	PYTHONPATH=. $(PYTHON) evaluation/run_eval.py \
+		--config configs/retention_int8.yaml \
+		--output $(REAL_RESULTS)/retention_int8
+	PYTHONPATH=. $(PYTHON) evaluation/run_eval.py \
+		--config configs/retention_int4.yaml \
+		--output $(REAL_RESULTS)/retention_int4
+
 # ----------------------------------------------------------------------------
 # Tables
 # ----------------------------------------------------------------------------
@@ -83,6 +101,13 @@ compare:
 	@echo ""
 	@cat $(RESULTS)/comparison.md
 
+compare-real:
+	PYTHONPATH=. $(PYTHON) evaluation/comparison_table.py \
+		--results-root $(REAL_RESULTS) \
+		--output $(REAL_RESULTS)/comparison.md
+	@echo ""
+	@cat $(REAL_RESULTS)/comparison.md
+
 # Pairwise delta. Usage: make ablate A=baseline B=retention
 ablate:
 	PYTHONPATH=. $(PYTHON) evaluation/comparison_table.py \
@@ -90,6 +115,14 @@ ablate:
 		--output $(RESULTS)/ablate-$(A)-vs-$(B).md
 	@echo ""
 	@cat $(RESULTS)/ablate-$(A)-vs-$(B).md
+
+# Pairwise delta for real (non-dry) runs.
+ablate-real:
+	PYTHONPATH=. $(PYTHON) evaluation/comparison_table.py \
+		--ablate $(REAL_RESULTS)/$(A)/summary.json $(REAL_RESULTS)/$(B)/summary.json \
+		--output $(REAL_RESULTS)/ablate-$(A)-vs-$(B).md
+	@echo ""
+	@cat $(REAL_RESULTS)/ablate-$(A)-vs-$(B).md
 
 # ----------------------------------------------------------------------------
 # Housekeeping
