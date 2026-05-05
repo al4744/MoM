@@ -14,7 +14,7 @@ PYTHON ?= python
 RESULTS ?= results
 CONFIGS := $(wildcard configs/*.yaml)
 
-.PHONY: test test-quick eval-baseline eval-retention eval-all compare ablate clean
+.PHONY: test test-quick eval-baseline eval-retention eval-all smoke smoke-baseline smoke-retention compare ablate clean
 
 # ----------------------------------------------------------------------------
 # Tests
@@ -41,6 +41,25 @@ eval-retention:
 		--config configs/retention.yaml \
 		--output $(RESULTS)/retention \
 		--dry-run
+
+# Smoke test: real run_eval pipeline, fake engine, no CUDA, no vLLM.
+# Useful for proving the metrics pipeline before hitting GCP.
+smoke-baseline:
+	PYTHONPATH=. $(PYTHON) evaluation/run_eval.py \
+		--config configs/baseline.yaml \
+		--output $(RESULTS)/baseline-smoke \
+		--mock-engine
+
+smoke-retention:
+	PYTHONPATH=. $(PYTHON) evaluation/run_eval.py \
+		--config configs/retention.yaml \
+		--output $(RESULTS)/retention-smoke \
+		--mock-engine
+
+smoke: smoke-baseline smoke-retention
+	PYTHONPATH=. $(PYTHON) evaluation/comparison_table.py \
+		--ablate $(RESULTS)/baseline-smoke/summary.json $(RESULTS)/retention-smoke/summary.json \
+		--output $(RESULTS)/smoke-ablate.md
 
 # Iterate every YAML config under configs/ and dry-run it.
 eval-all:

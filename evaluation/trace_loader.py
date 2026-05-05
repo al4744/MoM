@@ -120,7 +120,7 @@ def fixture_trace(
     tool_every: int = 3,
     model: str = "meta-llama/Meta-Llama-3-8B",
     prompt_tokens: int = 1024,
-    tool_latency_ms: float = 1500.0,
+    tool_latency_ms: float = 0.0,
 ) -> TraceSpec:
     """Build a deterministic in-memory TraceSpec for tests.
 
