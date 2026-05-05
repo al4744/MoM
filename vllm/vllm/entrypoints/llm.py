@@ -333,6 +333,9 @@ class LLM:
         guided_options_request: Optional[Union[LLMGuidedOptions,
                                                GuidedDecodingRequest]] = None,
         priority: Optional[List[int]] = None,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> List[RequestOutput]:
         """Generates the completions for the input prompts.
 
@@ -408,7 +411,11 @@ class LLM:
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
             guided_options=guided_options_request,
-            priority=priority)
+            priority=priority,
+            program_id=program_id,
+            is_tool_call_pending=is_tool_call_pending,
+            tool_name=tool_name,
+        )
 
         outputs = self._run_engine(use_tqdm=use_tqdm)
         return self.engine_class.validate_outputs(outputs, RequestOutput)
@@ -848,6 +855,9 @@ class LLM:
         prompt_adapter_request: Optional[PromptAdapterRequest],
         guided_options: Optional[GuidedDecodingRequest] = None,
         priority: Optional[List[int]] = None,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> None:
         if guided_options is not None:
             warnings.warn(
@@ -886,6 +896,9 @@ class LLM:
                     lora_request, Sequence) else lora_request,
                 prompt_adapter_request=prompt_adapter_request,
                 priority=priority[i] if priority else 0,
+                program_id=program_id,
+                is_tool_call_pending=is_tool_call_pending,
+                tool_name=tool_name,
             )
 
     def _add_request(
@@ -895,6 +908,9 @@ class LLM:
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> None:
         request_id = str(next(self.request_counter))
         self.llm_engine.add_request(
@@ -904,6 +920,9 @@ class LLM:
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
             priority=priority,
+            program_id=program_id,
+            is_tool_call_pending=is_tool_call_pending,
+            tool_name=tool_name,
         )
 
     def _add_guided_params(

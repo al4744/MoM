@@ -13,6 +13,9 @@ model:
 engine:
   retention:
     enabled: false
+  # Explicit false so the baseline↔retention diff is meaningful.
+  prefix_caching:
+    enabled: false
   quantization:
     kv_cache: null            # one of: null | int8 | int4
   torch_compile:

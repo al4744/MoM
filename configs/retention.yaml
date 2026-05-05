@@ -33,6 +33,10 @@ engine:
       # Above this, new pin requests are rejected (event_type=pin_rejected_budget).
       max_pinned_fraction: 0.30
 
+  # Required by Workstream A: retention hard-fails at engine init if this is off.
+  prefix_caching:
+    enabled: true
+
   quantization:
     kv_cache: null            # null | int8 | int4   (Workstream B knob)
   torch_compile:

@@ -46,6 +46,9 @@ class EngineProtocol(Protocol):
         sampling_params: Any = None,
         *,
         use_tqdm: bool = False,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> list[Any]:
         ...
 
@@ -79,6 +82,7 @@ class _MockRequestOutput:
     metrics: _MockMetrics
     outputs: list[_MockCompletionOutput]
     finished: bool = True
+    program_id: Optional[str] = None
 
 
 class MockEngine:
@@ -114,6 +118,9 @@ class MockEngine:
         sampling_params: Any = None,
         *,
         use_tqdm: bool = False,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> list[_MockRequestOutput]:
         if isinstance(prompts, str):
             prompts = [prompts]
@@ -152,6 +159,7 @@ class MockEngine:
                             token_ids=list(range(n_tokens)),
                         )
                     ],
+                    program_id=program_id,
                 )
             )
             self.call_count += 1
@@ -252,6 +260,11 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
         # vLLM v0.6.4 exposes torch.compile via VLLM_USE_TORCH_COMPILE env var.
         # Setting the env var is Workstream C's responsibility.
         pass
+
+    # Prefix caching — required when retention is active; explicit for baseline
+    # so the two configs produce a meaningful diff.
+    prefix_caching = engine_cfg.get("prefix_caching", {}).get("enabled", False)
+    llm_kwargs["enable_prefix_caching"] = prefix_caching
 
     # Retention (Workstream A) — forward RetentionConfig if enabled.
     retention_config = build_retention_config(engine_cfg.get("retention", {}))
