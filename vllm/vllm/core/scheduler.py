@@ -4,9 +4,17 @@ import random
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Deque, Dict, Iterable, List, Optional
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional
 from typing import Sequence as GenericSequence
 from typing import Set, Tuple, Union
+
+# Optional: retention events module (only available when running from project root).
+# vLLM's own test suite may not have src.retention on the path; the try/except
+# makes this import safe in both contexts.
+try:
+    from src.retention import events as _retention_events
+except ImportError:
+    _retention_events = None  # type: ignore[assignment]
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
@@ -304,6 +312,7 @@ class Scheduler:
         lora_config: Optional[LoRAConfig],
         pipeline_parallel_size: int = 1,
         output_proc_callback: Optional[Callable] = None,
+        pin_manager: Optional[Any] = None,
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
@@ -367,6 +376,9 @@ class Scheduler:
                                        else 0)
         self.num_cumulative_preemption: int = 0
 
+        # Workstream A: KV retention. None when retention is disabled.
+        self.pin_manager: Optional[Any] = pin_manager
+
         # Used to cache python objects
         self._seq_group_metadata_cache: List[PyObjectCache] = []
         self._scheduler_running_outputs_cache: List[PyObjectCache] = []
@@ -409,6 +421,31 @@ class Scheduler:
         return 1
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
+        # Hook B: if the new request belongs to a program whose prior turn was
+        # pinned, free the held seq_group now so its blocks flow into the
+        # evictor with content-hashes intact.  The new request's upcoming
+        # allocate() call will then find those hashes in _cached_blocks and
+        # revive the blocks via _incr_refcount_cached_block — zero reprefill.
+        # We also close the EMA learning loop using the observed tool duration.
+        pid = getattr(seq_group, "program_id", None)
+        if self.pin_manager is not None and pid is not None:
+            entry = self.pin_manager.try_reuse(pid)
+            if entry is not None:
+                observed = time.monotonic() - entry.finish_time
+                self.pin_manager.predictor.update(entry.tool_name, observed)
+                if _retention_events is not None:
+                    _retention_events.log_event(
+                        "reuse",
+                        pid,
+                        tool_name=entry.tool_name,
+                        num_blocks=entry.num_blocks,
+                        observed_duration=observed,
+                        current_pinned_count=self.pin_manager.num_pinned_entries(),
+                        current_pinned_blocks=self.pin_manager.num_pinned_blocks(),
+                    )
+                # Release the deferred hold; prefix-cache will match hashes.
+                self._free_finished_seqs(entry.seq_group)
+
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
 
@@ -561,6 +598,24 @@ class Scheduler:
 
             # NOTE(woosuk): Preemption happens only when there is no available
             # slot to keep all the sequence groups in the RUNNING state.
+            # Hook D2: before preempting a running sequence, check if evicting
+            # a pinned KV entry frees enough space (avoids expensive recompute).
+            if (self.pin_manager is not None
+                    and not self._can_append_slots(seq_group, enable_chunking)):
+                while not self._can_append_slots(seq_group, enable_chunking):
+                    victim = self.pin_manager.evict_soonest_expiring()
+                    if victim is None:
+                        break
+                    if _retention_events is not None:
+                        _retention_events.log_event(
+                            "evict",
+                            victim.program_id,
+                            tool_name=victim.tool_name,
+                            num_blocks=victim.num_blocks,
+                            current_pinned_count=self.pin_manager.num_pinned_entries(),
+                            current_pinned_blocks=self.pin_manager.num_pinned_blocks(),
+                        )
+                    self._free_finished_seqs(victim.seq_group)
             while not self._can_append_slots(seq_group, enable_chunking):
                 budget.subtract_num_batched_tokens(seq_group.request_id,
                                                    num_running_tokens)
@@ -909,7 +964,29 @@ class Scheduler:
             can_allocate = self.block_manager.can_allocate(
                 seq_group, num_lookahead_slots=num_lookahead_slots)
             if can_allocate == AllocStatus.LATER:
-                break
+                # Hook D1: before stalling, free the soonest-expiring pinned
+                # entry to reclaim GPU blocks.  Repeat until we can allocate
+                # or the pin set is exhausted.
+                if self.pin_manager is not None:
+                    while can_allocate == AllocStatus.LATER:
+                        victim = self.pin_manager.evict_soonest_expiring()
+                        if victim is None:
+                            break
+                        if _retention_events is not None:
+                            _retention_events.log_event(
+                                "evict",
+                                victim.program_id,
+                                tool_name=victim.tool_name,
+                                num_blocks=victim.num_blocks,
+                                current_pinned_count=self.pin_manager.num_pinned_entries(),
+                                current_pinned_blocks=self.pin_manager.num_pinned_blocks(),
+                            )
+                        self._free_finished_seqs(victim.seq_group)
+                        can_allocate = self.block_manager.can_allocate(
+                            seq_group,
+                            num_lookahead_slots=num_lookahead_slots)
+                if can_allocate == AllocStatus.LATER:
+                    break
             elif can_allocate == AllocStatus.NEVER:
                 logger.warning(
                     "Input prompt (%d tokens) + lookahead slots (%d) is "
@@ -1216,6 +1293,27 @@ class Scheduler:
         # such as self.running, self.swapped, and self.waiting.
         scheduler_start_time = time.perf_counter()
 
+        # Hook C: release blocks for programs whose TTL has expired.
+        # The waiting_program_ids check prevents a race where TTL expired in
+        # the same scheduler tick that the next turn arrived via add_seq_group.
+        if self.pin_manager is not None:
+            waiting_pids = {
+                getattr(sg, "program_id", None)
+                for sg in self.waiting
+                if getattr(sg, "program_id", None) is not None
+            }
+            for entry in self.pin_manager.sweep_expired(waiting_pids):
+                if _retention_events is not None:
+                    _retention_events.log_event(
+                        "expire",
+                        entry.program_id,
+                        tool_name=entry.tool_name,
+                        num_blocks=entry.num_blocks,
+                        current_pinned_count=self.pin_manager.num_pinned_entries(),
+                        current_pinned_blocks=self.pin_manager.num_pinned_blocks(),
+                    )
+                self._free_finished_seqs(entry.seq_group)
+
         scheduler_outputs: SchedulerOutputs = self._schedule()
         now = time.time()
 
@@ -1386,6 +1484,39 @@ class Scheduler:
             # This list will be used to update the Mamba cache in the
             # next step.
             self._finished_requests_ids.append(seq_group.request_id)
+
+            # Hook A: if the client flagged a pending tool call, defer the KV
+            # free so the next turn can reuse blocks via prefix-cache lookup.
+            # Returns early WITHOUT calling _free_finished_seqs — the held
+            # reference keeps block refcounts > 0.
+            if (self.pin_manager is not None
+                    and getattr(seq_group, "is_tool_call_pending", False)
+                    and getattr(seq_group, "program_id", None) is not None):
+                block_tables = getattr(self.block_manager, "block_tables", {})
+                num_blocks = sum(
+                    len(block_tables[seq.seq_id].physical_block_ids)
+                    for seq in seq_group.get_seqs()
+                    if seq.seq_id in block_tables
+                )
+                pinned = self.pin_manager.pin(
+                    seq_group.program_id,
+                    seq_group,
+                    seq_group.tool_name or "",
+                    num_blocks,
+                )
+                if pinned:
+                    if _retention_events is not None:
+                        _retention_events.log_event(
+                            "pin",
+                            seq_group.program_id,
+                            tool_name=seq_group.tool_name,
+                            num_blocks=num_blocks,
+                            ttl_assigned=None,
+                            current_pinned_count=self.pin_manager.num_pinned_entries(),
+                            current_pinned_blocks=self.pin_manager.num_pinned_blocks(),
+                        )
+                    return  # blocks stay allocated; skip _free_finished_seqs
+                # Budget exceeded — fall through to normal free below
 
         # Free finished seqs
         self._free_finished_seqs(seq_group)

@@ -229,6 +229,7 @@ class LLMEngine:
         input_registry: InputRegistry = INPUT_REGISTRY,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         use_cached_outputs: bool = False,
+        retention_config: Optional[Any] = None,
     ) -> None:
 
         # TODO: remove the local variables and use self.* throughout the class.
@@ -417,6 +418,29 @@ class LLMEngine:
         # of request outputs to asyncio queues
         self.process_request_outputs_callback: Optional[Callable] = None
 
+        # Workstream A: build PinManager before the scheduler so we can inject
+        # it at construction time.  Instantiated only when retention is enabled
+        # and prefix caching is on (required for hash-based block reuse).
+        self.pin_manager: Optional[Any] = None
+        if retention_config is not None and getattr(retention_config,
+                                                    "enabled", False):
+            if not cache_config.enable_prefix_caching:
+                raise ValueError(
+                    "KV retention (retention_config.enabled=True) requires "
+                    "enable_prefix_caching=True.  "
+                    "Set CacheConfig.enable_prefix_caching=True or disable "
+                    "retention_config.enabled.")
+            from src.retention.ttl_predictor import TTLPredictor
+            from src.retention.pin_manager import PinManager
+            _predictor = TTLPredictor.from_config(retention_config.ttl)
+            self.pin_manager = PinManager(
+                predictor=_predictor,
+                total_gpu_blocks=cache_config.num_gpu_blocks or 1,
+                max_pinned_fraction=retention_config.pin_manager
+                .max_pinned_fraction,
+            )
+            self.pin_manager.bind_to_current_thread()
+
         # Create the scheduler.
         # NOTE: the cache_config here have been updated with the numbers of
         # GPU and CPU blocks, which are profiled in the distributed executor.
@@ -425,7 +449,8 @@ class LLMEngine:
                 scheduler_config, cache_config, lora_config,
                 parallel_config.pipeline_parallel_size,
                 self.async_callbacks[v_id]
-                if model_config.use_async_output_proc else None)
+                if model_config.use_async_output_proc else None,
+                pin_manager=self.pin_manager)
             for v_id in range(parallel_config.pipeline_parallel_size)
         ]
 
