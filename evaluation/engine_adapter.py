@@ -249,11 +249,14 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
     if "gpu_memory_utilization" in model_cfg:
         llm_kwargs["gpu_memory_utilization"] = model_cfg["gpu_memory_utilization"]
 
-    # Quantization (Workstream B) — config slot defined; engine support TODO.
-    quant = engine_cfg.get("quantization", {}).get("kv_cache")
-    if quant is not None:
-        # When B lands, this should set kv_cache_dtype or similar.
-        llm_kwargs["kv_cache_dtype"] = quant
+    # Quantization (Workstream B) — build KVQuantConfig and forward to LLMEngine.
+    try:
+        from src.quantization.config import load_kv_quant_config
+        quant_cfg = load_kv_quant_config(engine_cfg.get("quantization"))
+        if quant_cfg.enabled:
+            llm_kwargs["kv_quant_config"] = quant_cfg
+    except ImportError:
+        pass
 
     # torch.compile (Workstream C) — engine flag, currently env-driven in vLLM.
     if engine_cfg.get("torch_compile", {}).get("enabled"):
