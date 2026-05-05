@@ -53,6 +53,7 @@ from evaluation.engine_adapter import (
 )
 from evaluation.metrics import RunSummary, TimingContext, TraceResult, TurnMetrics
 from evaluation.trace_loader import TraceSpec, TraceTurn, fixture_trace
+from src.quantization.config import load_kv_quant_config
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +163,14 @@ def stub_trace(config_name: str, trace_id: str, num_turns: int) -> TraceResult:
 # ---------------------------------------------------------------------------
 # Real run — drives an engine through one or many TraceSpecs
 # ---------------------------------------------------------------------------
+
+def _compression_ratio_for_mode(mode: str | None) -> float | None:
+    if mode == "int8":
+        return 0.50
+    if mode == "int4":
+        return 0.25
+    return None
+
 
 def _placeholder_prompt(turn: TraceTurn, conversation_so_far: str) -> str:
     """Render a turn's contribution to the running conversation prompt.
@@ -325,7 +334,19 @@ def run_real(
     if engine is None:
         engine = build_real_engine(cfg)
 
-    return [run_trace(engine, spec, cfg) for spec in specs]
+    traces = [run_trace(engine, spec, cfg) for spec in specs]
+
+    # Annotate Workstream B quantization metrics from config.
+    quant_cfg = load_kv_quant_config(cfg.get("engine", {}).get("quantization"))
+    if quant_cfg.enabled:
+        ratio = _compression_ratio_for_mode(quant_cfg.mode)
+        for trace in traces:
+            if ratio is not None and trace.peak_vram_mb and trace.peak_vram_mb > 0:
+                trace.quantized_kv_mb = trace.peak_vram_mb * ratio
+                trace.kv_compression_ratio = ratio
+                trace.metadata["kv_quant_mode"] = quant_cfg.mode
+
+    return traces
 
 
 # ---------------------------------------------------------------------------

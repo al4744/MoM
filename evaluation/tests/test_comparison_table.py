@@ -17,6 +17,8 @@ def _summary(name: str, ttft: float, prt: float = 0.0, vram: float = 30000.0,
         "mean_prefill_recomp_ms": prt,
         "p99_tbt_ms": 15.0,
         "mean_peak_vram_mb": vram,
+        "mean_quantized_kv_mb": None,
+        "mean_kv_compression_ratio": None,
         "total_preemptions": prmp,
         "mean_xfer_bandwidth_mb_s": 0.0,
         "mean_task_accuracy": acc,
@@ -51,6 +53,7 @@ class TestEmitTable:
         assert "TTFT (ms)" in out
         assert "Prefill recomp (ms)" in out
         assert "VRAM (MB)" in out
+        assert "Quant KV (MB)" in out
 
 
 class TestLoadSummaries:
