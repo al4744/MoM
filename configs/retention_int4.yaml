@@ -1,0 +1,46 @@
+# Workstream B — retention + INT4 KV cache quantization.
+name: retention-int4
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: true
+    max_pinned_fraction: 0.30
+    ttl:
+      default_ms: 1500
+      ema_alpha: 0.2
+      min_samples: 3
+      cap_ms: 10000
+  quantization:
+    kv_cache: int4
+    group_size: 64
+    per_channel: false
+    recent_turns_fp: 2
+    max_error_guard: 0.20
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
