@@ -42,6 +42,7 @@ import argparse
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -222,6 +223,18 @@ def run_trace(
     trace.metadata["model"] = spec.model
     trace.metadata["tool_latency_dist"] = spec.tool_latency_dist
 
+    # Stable program_id for the whole trace — identifies this agent session to
+    # the retention system so KV blocks can be pinned across tool-call turns.
+    program_id = str(uuid.uuid4())
+
+    # Precompute which turn indices are immediately followed by a tool_call so
+    # we can set is_tool_call_pending=True on the preceding user_prompt.
+    tool_call_after: set[int] = {
+        spec.turns[i].turn_index
+        for i in range(len(spec.turns) - 1)
+        if spec.turns[i + 1].kind == "tool_call"
+    }
+
     # Reset CUDA peak before the trace if available.
     cuda_available = False
     try:
@@ -247,11 +260,29 @@ def run_trace(
             continue
 
         # turn.kind == "user_prompt"
+        is_tool_call_pending = turn.turn_index in tool_call_after
+        # When a tool call is pending, look up the tool name from the next turn.
+        pending_tool_name: Optional[str] = None
+        if is_tool_call_pending:
+            idx = next(
+                j for j, t in enumerate(spec.turns)
+                if t.turn_index == turn.turn_index
+            )
+            if idx + 1 < len(spec.turns):
+                pending_tool_name = spec.turns[idx + 1].tool_name
+
         prompt = _placeholder_prompt(turn, conversation)
         sp = _make_sampling_params(turn)
 
         with TimingContext() as turn_timer:
-            outputs = engine.generate(prompt, sp)
+            outputs = engine.generate(
+                prompt,
+                sp,
+                use_tqdm=False,
+                program_id=program_id,
+                is_tool_call_pending=is_tool_call_pending,
+                tool_name=pending_tool_name,
+            )
 
         if not outputs:
             continue
@@ -293,11 +324,16 @@ def run_trace(
             pass
 
     # vLLM scheduler preemption counter, if exposed.
-    sched = getattr(engine, "llm_engine", None)
-    if sched is not None:
-        scheduler = getattr(sched, "scheduler", None)
-        if scheduler is not None and hasattr(scheduler, "num_preemption"):
-            trace.preemption_count = int(scheduler.num_preemption)
+    # llm_engine.scheduler is a List[Scheduler] (one per pipeline stage);
+    # sum across all stages and use num_cumulative_preemption (the real attr).
+    llm_engine = getattr(engine, "llm_engine", None)
+    if llm_engine is not None:
+        schedulers = getattr(llm_engine, "scheduler", None) or []
+        if not isinstance(schedulers, list):
+            schedulers = [schedulers]
+        trace.preemption_count = sum(
+            getattr(s, "num_cumulative_preemption", 0) for s in schedulers
+        )
 
     return trace
 
