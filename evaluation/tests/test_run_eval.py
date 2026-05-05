@@ -30,12 +30,6 @@ class TestStubTrace:
         assert all(t.ttft_ms == -1.0 for t in tr.turns)
 
 
-class TestRunReal:
-    def test_raises_until_engine_hooks_land(self) -> None:
-        with pytest.raises(NotImplementedError):
-            run_eval.run_real({})
-
-
 class TestLoadConfig:
     def test_loads_yaml_config(self, tmp_path) -> None:
         cfg_path = tmp_path / "test.yaml"
