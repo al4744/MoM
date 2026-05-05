@@ -129,6 +129,8 @@ class TraceResult:
     preemption_count: int = 0
     cpu_gpu_xfer_bytes: int = 0
     cpu_gpu_xfer_ms: float = 0.0
+    quantized_kv_mb: Optional[float] = None
+    kv_compression_ratio: Optional[float] = None
 
     # Optional accuracy metric for AgentBench/ToolBench traces.
     task_accuracy: Optional[float] = None
@@ -200,6 +202,8 @@ class RunSummary:
     mean_peak_vram_mb: float
     total_preemptions: int
     mean_xfer_bandwidth_mb_s: float
+    mean_quantized_kv_mb: Optional[float] = None
+    mean_kv_compression_ratio: Optional[float] = None
 
     mean_task_accuracy: Optional[float] = None
 
@@ -214,6 +218,11 @@ class RunSummary:
             )
 
         accs = [t.task_accuracy for t in traces if t.task_accuracy is not None]
+        quantized = [t.quantized_kv_mb for t in traces if t.quantized_kv_mb is not None]
+        ratios = [
+            t.kv_compression_ratio for t in traces
+            if t.kv_compression_ratio is not None
+        ]
         return cls(
             config_name=traces[0].config_name,
             num_traces=len(traces),
@@ -229,5 +238,7 @@ class RunSummary:
             mean_xfer_bandwidth_mb_s=statistics.mean(
                 t.cpu_gpu_xfer_bandwidth_mb_s for t in traces
             ),
+            mean_quantized_kv_mb=(statistics.mean(quantized) if quantized else None),
+            mean_kv_compression_ratio=(statistics.mean(ratios) if ratios else None),
             mean_task_accuracy=(statistics.mean(accs) if accs else None),
         )

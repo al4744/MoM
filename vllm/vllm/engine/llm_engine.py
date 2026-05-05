@@ -230,6 +230,7 @@ class LLMEngine:
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         use_cached_outputs: bool = False,
         retention_config: Optional[Any] = None,
+        kv_quant_config: Optional[Any] = None,
     ) -> None:
 
         # TODO: remove the local variables and use self.* throughout the class.
@@ -316,6 +317,9 @@ class LLMEngine:
         )
         self.log_stats = log_stats
         self.use_cached_outputs = use_cached_outputs
+        if kv_quant_config is not None:
+            # Project extension hook: cache-engine-level KV quantization config.
+            setattr(self.cache_config, "kv_quant_config", kv_quant_config)
 
         if not self.model_config.skip_tokenizer_init:
             self.tokenizer = self._init_tokenizer()

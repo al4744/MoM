@@ -50,9 +50,9 @@ from typing import Any
 
 HEADER = (
     "| Config | TTFT (ms) | Prefill recomp (ms) | TBT p99 (ms) "
-    "| VRAM (MB) | Preemptions | XFER (MB/s) | Task acc |"
+    "| VRAM (MB) | Quant KV (MB) | KV ratio | Preemptions | XFER (MB/s) | Task acc |"
 )
-DIVIDER = "|" + "|".join("---" for _ in range(8)) + "|"
+DIVIDER = "|" + "|".join("---" for _ in range(10)) + "|"
 
 
 # Metrics shown in the ablation table, in display order.
@@ -63,6 +63,8 @@ ABLATE_METRICS: tuple[tuple[str, str, int, bool], ...] = (
     ("TBT p99 (ms)",         "p99_tbt_ms",                1, True),
     ("VRAM (MB)",            "mean_peak_vram_mb",         0, True),
     ("Preemptions",          "total_preemptions",         0, True),
+    ("Quant KV (MB)",        "mean_quantized_kv_mb",      1, True),
+    ("KV compression ratio", "mean_kv_compression_ratio", 3, False),
     ("XFER (MB/s)",          "mean_xfer_bandwidth_mb_s",  1, False),
     ("Task accuracy",        "mean_task_accuracy",        3, False),
 )
@@ -139,12 +141,14 @@ def emit_table(summaries: list[dict[str, Any]]) -> str:
     rows = [HEADER, DIVIDER]
     for s in summaries:
         rows.append(
-            "| {name} | {ttft} | {prt} | {tbt} | {vram} | {prmp} | {xfer} | {acc} |".format(
+            "| {name} | {ttft} | {prt} | {tbt} | {vram} | {qkv} | {ratio} | {prmp} | {xfer} | {acc} |".format(
                 name=s.get("config_name", "?"),
                 ttft=fmt(s.get("mean_ttft_ms")),
                 prt=fmt(s.get("mean_prefill_recomp_ms")),
                 tbt=fmt(s.get("p99_tbt_ms")),
                 vram=fmt(s.get("mean_peak_vram_mb"), 0),
+                qkv=fmt(s.get("mean_quantized_kv_mb"), 1),
+                ratio=fmt(s.get("mean_kv_compression_ratio"), 3),
                 prmp=fmt(s.get("total_preemptions")),
                 xfer=fmt(s.get("mean_xfer_bandwidth_mb_s")),
                 acc=fmt(s.get("mean_task_accuracy"), 3),

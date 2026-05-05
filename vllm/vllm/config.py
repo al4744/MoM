@@ -721,6 +721,7 @@ class CacheConfig:
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
+        kv_cache_quantization: Optional[str] = None,
     ) -> None:
         self.block_size = block_size
         self.gpu_memory_utilization = gpu_memory_utilization
@@ -731,9 +732,11 @@ class CacheConfig:
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
         self.cpu_offload_gb = cpu_offload_gb
+        self.kv_cache_quantization = kv_cache_quantization
 
         self._verify_args()
         self._verify_cache_dtype()
+        self._verify_kv_cache_quantization()
         self._verify_prefix_caching()
 
         # Will be set after profiling.
@@ -771,6 +774,14 @@ class CacheConfig:
             raise NotImplementedError(
                 "Prefix caching is not supported with sliding window. "
                 "Run with --disable-sliding-window to use prefix caching.")
+
+    def _verify_kv_cache_quantization(self) -> None:
+        if self.kv_cache_quantization is None:
+            return
+        if self.kv_cache_quantization not in ("int8", "int4"):
+            raise ValueError(
+                "Unknown kv cache quantization mode: "
+                f"{self.kv_cache_quantization}. Expected one of int8/int4.")
 
     def verify_with_parallel_config(
         self,
