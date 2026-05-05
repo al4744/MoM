@@ -106,6 +106,27 @@ def load_config(path: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def _configure_retention_events(output_dir: Path, *, use_wandb: bool) -> None:
+    """Point Daksh's structured event logger at output_dir/events.jsonl.
+
+    Soft-imports the retention package so this function works even when the
+    vLLM-side retention modules are unavailable (e.g. during pure --dry-run
+    on a machine without the project root checked out). Failures here are
+    deliberately swallowed; an absent events.jsonl is informative on its own.
+    """
+    try:
+        from src.retention import events
+    except ImportError:
+        return
+    try:
+        events.configure(
+            log_file=str(output_dir / "events.jsonl"),
+            use_wandb=use_wandb,
+        )
+    except Exception:  # pragma: no cover — defensive
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Stub generator (--dry-run)
 # ---------------------------------------------------------------------------
@@ -322,6 +343,12 @@ def main() -> int:
         return 1
 
     args.output.mkdir(parents=True, exist_ok=True)
+
+    # Subscribe Daksh's retention event log to a per-run JSONL file.
+    # No-op for dry-run / mock modes since no PinManager is active, but
+    # always wire it so a file is created (an empty file is meaningful — it
+    # confirms retention was either disabled or genuinely silent for this run).
+    _configure_retention_events(args.output, use_wandb=args.wandb)
 
     if args.dry_run:
         traces = [

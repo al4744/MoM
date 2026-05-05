@@ -164,6 +164,10 @@ class LLM:
         # After positional args are removed, move this right below `model`
         task: TaskOption = "auto",
         override_pooler_config: Optional[PoolerConfig] = None,
+        # Workstream A: tool-aware KV retention. None disables retention
+        # entirely (vanilla vLLM behavior). Pass a src.retention.config
+        # RetentionConfig instance (or duck-typed equivalent) to enable.
+        retention_config: Optional[Any] = None,
         **kwargs,
     ) -> None:
         '''
@@ -208,7 +212,10 @@ class LLM:
 
         # TODO(rob): enable mp by default (issue with fork vs spawn)
         self.llm_engine = self.engine_class.from_engine_args(
-            engine_args, usage_context=UsageContext.LLM_CLASS)
+            engine_args,
+            usage_context=UsageContext.LLM_CLASS,
+            retention_config=retention_config,
+        )
 
         self.request_counter = Counter()
 
