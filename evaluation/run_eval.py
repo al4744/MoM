@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -60,6 +61,11 @@ from src.quantization.config import load_kv_quant_config
 # ---------------------------------------------------------------------------
 # CLI parsing
 # ---------------------------------------------------------------------------
+
+def _default_wandb_mode() -> str:
+    mode = os.environ.get("WANDB_MODE", "online")
+    return mode if mode in {"online", "offline", "disabled"} else "online"
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -91,7 +97,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--wandb",
         action="store_true",
-        help="Push aggregated RunSummary to WandB (requires WANDB_API_KEY).",
+        help="Log evaluation config, metrics, tables, and output artifacts to WandB.",
+    )
+    p.add_argument(
+        "--wandb-project",
+        default="mom-eval",
+        help="WandB project name. Defaults to mom-eval.",
+    )
+    p.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="Optional WandB entity/team.",
+    )
+    p.add_argument(
+        "--wandb-group",
+        default=None,
+        help="Optional WandB run group for baseline/optimized comparisons.",
+    )
+    p.add_argument(
+        "--wandb-tags",
+        default="",
+        help="Comma-separated WandB tags. Config name and execution mode are added automatically.",
+    )
+    p.add_argument(
+        "--wandb-mode",
+        choices=("online", "offline", "disabled"),
+        default=_default_wandb_mode(),
+        help="WandB mode. Defaults to WANDB_MODE if set, otherwise online.",
     )
     return p.parse_args()
 
@@ -408,14 +440,17 @@ def main() -> int:
     _configure_retention_events(args.output, use_wandb=args.wandb)
 
     if args.dry_run:
+        execution_mode = "dry-run"
         traces = [
             stub_trace(config_name, ts["id"], ts.get("turns", 10))
             for ts in trace_specs
         ]
     elif args.mock_engine:
+        execution_mode = "mock"
         from evaluation.engine_adapter import MockEngine
         traces = run_real(cfg, engine=MockEngine())
     else:
+        execution_mode = "real"
         traces = run_real(cfg)
 
     # Per-trace JSON dump.
@@ -433,13 +468,30 @@ def main() -> int:
 
     # Optional WandB push.
     if args.wandb:
+        from evaluation.wandb_logger import WandbSettings, log_evaluation_run
+
+        tags = tuple(tag.strip() for tag in args.wandb_tags.split(",") if tag.strip())
         try:
-            import wandb  # type: ignore
-            wandb.init(project="mom-eval", name=config_name, config=cfg)
-            wandb.log(summary.__dict__)
-            wandb.finish()
-        except ImportError:
-            print("[!] wandb not installed; skipping --wandb push", file=sys.stderr)
+            log_evaluation_run(
+                settings=WandbSettings(
+                    project=args.wandb_project,
+                    entity=args.wandb_entity,
+                    group=args.wandb_group,
+                    tags=tags,
+                    mode=args.wandb_mode,
+                ),
+                cfg=cfg,
+                config_path=args.config,
+                output_dir=args.output,
+                traces=traces,
+                summary=summary,
+                execution_mode=execution_mode,
+            )
+        except Exception as e:  # pragma: no cover - optional integration guard
+            print(
+                f"[!] wandb logging failed; continuing without WandB: {e}",
+                file=sys.stderr,
+            )
 
     print(f"\n  config={config_name} traces={len(traces)} ttft_ms={summary.mean_ttft_ms:.2f}")
     return 0

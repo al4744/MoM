@@ -93,6 +93,74 @@ Secondary (realism layers):
 - AgentBench task accuracy
 - ToolBench task accuracy
 
+## Experiment Tracking
+
+WandB is used to track inference and system benchmark runs, not model-training
+curves. The evaluation runner logs only measurements already produced by the
+existing evaluation pipeline.
+
+Public WandB dashboard URL: **TODO: add the final public dashboard link after
+real baseline and optimized runs are logged and the project is made public.**
+
+When `--wandb` is enabled, `evaluation/run_eval.py` logs:
+- Full YAML config as the WandB run config, plus the config file as an artifact.
+- Run metadata: config name, model name, trace IDs, execution mode (`dry-run`,
+  `mock`, or `real`), group, and tags.
+- Aggregate summary metrics: mean TTFT, mean post-tool prefill recomputation,
+  p99 TBT, mean peak VRAM, total preemptions, CPU-GPU transfer bandwidth, and
+  task accuracy when present.
+- Per-trace metrics for TTFT, post-tool prefill recomputation, p99 TBT, peak
+  VRAM, preemption count, CPU-GPU transfer bytes/time/bandwidth, and any
+  throughput or GPU-utilization fields already present in the result metadata.
+- A per-turn `wandb.Table` with latency, tool, recomputation, and pin/reuse
+  columns when turn-level data exists.
+- Output artifacts from the evaluation output directory, including per-trace
+  JSON files, `summary.json`, generated comparison markdown, CSV/JSON outputs,
+  and plot files when those files already exist.
+
+Mock smoke test without CUDA or network:
+
+```bash
+bash scripts/run_wandb_smoke_mock.sh
+```
+
+Mock runs validate logging only and are not final benchmark evidence.
+
+Normal evaluation runs without `--wandb` do not import WandB and do not require
+network access or `WANDB_API_KEY`.
+
+Before submission, open the final dashboard URL in an incognito or logged-out
+browser. Confirm the page loads without private account access and that baseline
+and retention runs are visible with the intended group and tags. The team should
+fill in interpretation and performance reasoning only after reviewing measured
+real runs.
+
+## VM / Final WandB Runs
+
+Real benchmark runs belong on the GPU/vLLM VM with a compatible Python version,
+preferably Python 3.11 or 3.12. Do not use local Mac/Python 3.14 runs as final
+vLLM benchmark evidence.
+
+One-time VM setup:
+
+```bash
+bash scripts/setup_vm_env.sh
+source .venv/bin/activate
+wandb login --relogin
+export WANDB_ENTITY=al4744-col
+```
+
+Final real WandB runs:
+
+```bash
+bash scripts/run_final_wandb_eval.sh
+```
+
+The final script runs real baseline and retention evaluations, writes outputs
+under `results/wandb/baseline` and `results/wandb/retention`, and logs to the
+`mom-eval` project with group `final-real`. It does not use `--mock-engine` and
+does not store or echo API keys.
+
 ## Setup (GCP VM)
 
 ```bash
@@ -100,19 +168,11 @@ Secondary (realism layers):
 git clone https://github.com/al4744/MoM.git
 cd MoM
 
-# 2. Create a virtual environment
-python -m venv .venv
+# 2. Create the virtual environment and install dependencies
+bash scripts/setup_vm_env.sh
 source .venv/bin/activate
 
-# 3. Install the vendored vLLM in editable mode
-cd vllm
-pip install -e .
-cd ..
-
-# 4. Install project dependencies
-pip install -r requirements.txt
-
-# 5. Download models
+# 3. Download models
 # Llama 3 8B and Mistral 7B (requires HuggingFace access)
 # huggingface-cli download meta-llama/Meta-Llama-3-8B --local-dir models/llama3-8b
 # huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir models/mistral-7b
@@ -139,6 +199,10 @@ make test
 # Smoke run — exercises the real run_eval pipeline through MockEngine
 # end-to-end, then emits an ablation table. Proves wiring before GCP.
 make smoke
+
+# Explicit Python selection if your shell or VM image needs it
+make PYTHON=python3 test
+make PYTHON=python3 smoke
 ```
 
 ### Real run (GPU + vLLM required)
@@ -146,19 +210,19 @@ make smoke
 ```bash
 # 0. One-time: pull, install vendored vLLM, download model
 git pull origin main
-cd vllm && pip install -e . && cd ..
-pip install -r requirements.txt
+python3 -m pip install -e ./vllm
+python3 -m pip install -r requirements.txt
 huggingface-cli login                                   # gated model
 huggingface-cli download meta-llama/Meta-Llama-3-8B \
     --local-dir models/llama3-8b
 
 # 1. Baseline (vanilla vLLM, no retention)
-PYTHONPATH=. python evaluation/run_eval.py \
+PYTHONPATH=. python3 evaluation/run_eval.py \
     --config configs/baseline.yaml \
     --output results/baseline-$(date +%Y%m%d-%H%M)/
 
 # 2. Retention (Workstream A path active)
-PYTHONPATH=. python evaluation/run_eval.py \
+PYTHONPATH=. python3 evaluation/run_eval.py \
     --config configs/retention.yaml \
     --output results/retention-$(date +%Y%m%d-%H%M)/
 
@@ -228,11 +292,15 @@ results/<run_name>/
 
 ```bash
 # Generate synthetic traces (Workstream C — not yet implemented)
-python benchmarks/trace_generator.py --turns 50 --output traces/
+python3 benchmarks/trace_generator.py --turns 50 --output traces/
 
 # Run baseline benchmark (uses evaluation/run_eval.py — see above)
 make eval-baseline
 ```
+
+## AI Tool Use
+
+TODO: Insert the required disclosure block from the HPML AI Use Policy before final submission.
 
 ## References
 
