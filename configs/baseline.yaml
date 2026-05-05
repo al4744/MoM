@@ -1,0 +1,41 @@
+# Workstream D — Vanilla vLLM baseline configuration.
+# No retention, no quantization, no torch.compile. This is the reference point
+# against which every optimization is measured.
+
+name: baseline
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: false
+  quantization:
+    kv_cache: null            # one of: null | int8 | int4
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+# Trace specifications consumed by benchmarks/trace_generator.py.
+# Each trace is one synthetic conversation with fixed prompt/tool-latency dist.
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed     # mixed | fast | medium | long
+    prompt_tokens: 1024
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024

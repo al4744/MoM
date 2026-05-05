@@ -1,0 +1,48 @@
+# Workstream D — Tool-aware KV retention configuration (Workstream A only).
+# Builds on baseline by enabling pin-or-evict with TTL prediction.
+# See src/retention/{config,pin_manager,ttl_predictor}.py for impl details.
+
+name: retention
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: true
+    # Maximum fraction of total GPU blocks that can be held in pinned state.
+    # Above this, new pin requests are rejected (logged as pin_rejected_budget).
+    max_pinned_fraction: 0.30
+    # TTL predictor: EMA-updated lookup keyed on tool_name.
+    ttl:
+      default_ms: 1500          # used until per-tool EMA has >= min_samples
+      ema_alpha: 0.2
+      min_samples: 3
+      cap_ms: 10000
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
