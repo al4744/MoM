@@ -653,6 +653,9 @@ class LLMEngine:
         prompt_adapter_request: Optional[PromptAdapterRequest],
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> Optional[SequenceGroup]:
         """Add a processed request to the engine's request pool.
         return the created sequence group.
@@ -702,7 +705,10 @@ class LLMEngine:
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
                 encoder_seq=encoder_seq,
-                priority=priority)
+                priority=priority,
+                program_id=program_id,
+                is_tool_call_pending=is_tool_call_pending,
+                tool_name=tool_name)
         elif isinstance(params, PoolingParams):
             seq_group = self._create_sequence_group_with_pooling(
                 request_id,
@@ -712,7 +718,10 @@ class LLMEngine:
                 lora_request=lora_request,
                 prompt_adapter_request=prompt_adapter_request,
                 encoder_seq=encoder_seq,
-                priority=priority)
+                priority=priority,
+                program_id=program_id,
+                is_tool_call_pending=is_tool_call_pending,
+                tool_name=tool_name)
         else:
             raise ValueError(
                 "Either SamplingParams or PoolingParams must be provided.")
@@ -775,6 +784,9 @@ class LLMEngine:
             priority: int = 0,
             *,
             inputs: Optional[PromptType] = None,  # DEPRECATED
+            program_id: Optional[str] = None,
+            is_tool_call_pending: bool = False,
+            tool_name: Optional[str] = None,
     ) -> None:
         """Add a request to the engine's request pool.
 
@@ -863,6 +875,9 @@ class LLMEngine:
             prompt_adapter_request=prompt_adapter_request,
             trace_headers=trace_headers,
             priority=priority,
+            program_id=program_id,
+            is_tool_call_pending=is_tool_call_pending,
+            tool_name=tool_name,
         )
 
     def _validate_token_prompt(self, prompt: PromptType,
@@ -897,6 +912,9 @@ class LLMEngine:
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         encoder_seq: Optional[Sequence] = None,
         priority: int = 0,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> SequenceGroup:
         """Creates a SequenceGroup with SamplingParams."""
         max_logprobs = self.get_model_config().max_logprobs
@@ -927,7 +945,10 @@ class LLMEngine:
             trace_headers=trace_headers,
             prompt_adapter_request=prompt_adapter_request,
             encoder_seq=encoder_seq,
-            priority=priority)
+            priority=priority,
+            program_id=program_id,
+            is_tool_call_pending=is_tool_call_pending,
+            tool_name=tool_name)
 
         return seq_group
 
@@ -941,6 +962,9 @@ class LLMEngine:
         prompt_adapter_request: Optional[PromptAdapterRequest],
         encoder_seq: Optional[Sequence] = None,
         priority: int = 0,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> SequenceGroup:
         """Creates a SequenceGroup with PoolingParams."""
         # Defensive copy of PoolingParams, which are used by the pooler
@@ -954,7 +978,10 @@ class LLMEngine:
             pooling_params=pooling_params,
             prompt_adapter_request=prompt_adapter_request,
             encoder_seq=encoder_seq,
-            priority=priority)
+            priority=priority,
+            program_id=program_id,
+            is_tool_call_pending=is_tool_call_pending,
+            tool_name=tool_name)
         return seq_group
 
     def abort_request(self, request_id: Union[str, Iterable[str]]) -> None:

@@ -634,6 +634,11 @@ class SequenceGroup:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        # Workstream A: tool-aware KV retention metadata.
+        # Supplied by the client; never parsed inside vLLM.
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> None:
         self.request_id = request_id
         self.seqs = seqs
@@ -657,6 +662,10 @@ class SequenceGroup:
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
         self.priority = priority
+
+        self.program_id = program_id
+        self.is_tool_call_pending = is_tool_call_pending
+        self.tool_name = tool_name
 
         self.cached_request_output = None
 

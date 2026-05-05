@@ -445,6 +445,9 @@ class _AsyncLLMEngine(LLMEngine):
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> None:
         ...
 
@@ -464,6 +467,9 @@ class _AsyncLLMEngine(LLMEngine):
             priority: int = 0,
             *,
             inputs: Optional[PromptType] = None,  # DEPRECATED
+            program_id: Optional[str] = None,
+            is_tool_call_pending: bool = False,
+            tool_name: Optional[str] = None,
     ) -> None:
         """Async version of :meth:`add_request`."""
         if inputs is not None:
@@ -512,6 +518,9 @@ class _AsyncLLMEngine(LLMEngine):
             prompt_adapter_request=prompt_adapter_request,
             trace_headers=trace_headers,
             priority=priority,
+            program_id=program_id,
+            is_tool_call_pending=is_tool_call_pending,
+            tool_name=tool_name,
         )
 
     async def check_health_async(self) -> None:
@@ -938,6 +947,9 @@ class AsyncLLMEngine(EngineClient):
         priority: int = 0,
         *,
         inputs: Optional[PromptType] = None,  # DEPRECATED
+        program_id: Optional[str] = None,
+        is_tool_call_pending: bool = False,
+        tool_name: Optional[str] = None,
     ) -> AsyncGenerator[Union[RequestOutput, EmbeddingRequestOutput], None]:
         if inputs is not None:
             prompt = inputs
@@ -968,6 +980,9 @@ class AsyncLLMEngine(EngineClient):
             trace_headers=trace_headers,
             prompt_adapter_request=prompt_adapter_request,
             priority=priority,
+            program_id=program_id,
+            is_tool_call_pending=is_tool_call_pending,
+            tool_name=tool_name,
         )
 
         return stream.generator()
