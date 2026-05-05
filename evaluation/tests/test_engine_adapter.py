@@ -5,6 +5,7 @@ import pytest
 
 from evaluation.engine_adapter import (
     MockEngine,
+    build_retention_config,
     extract_request_metrics,
     output_token_count,
 )
@@ -110,3 +111,90 @@ class TestOutputTokenCount:
         class _Empty:
             outputs = []
         assert output_token_count(_Empty()) == 0
+
+
+class TestBuildRetentionConfig:
+    """Verify the YAML → src.retention.config.RetentionConfig translation."""
+
+    def test_returns_none_for_disabled(self) -> None:
+        assert build_retention_config({"enabled": False}) is None
+
+    def test_returns_none_for_empty_dict(self) -> None:
+        assert build_retention_config({}) is None
+
+    def test_returns_none_for_missing_enabled(self) -> None:
+        assert build_retention_config({"ttl": {"alpha": 0.3}}) is None
+
+    def test_constructs_with_full_yaml(self) -> None:
+        from src.retention.config import (
+            PinManagerConfig,
+            RetentionConfig,
+            TTLConfig,
+        )
+        cfg = build_retention_config(
+            {
+                "enabled": True,
+                "ttl": {
+                    "alpha": 0.5,
+                    "default_ttl": 2.0,
+                    "safety_factor": 1.8,
+                    "use_per_tool_ema": False,
+                    "use_ema": True,
+                },
+                "pin_manager": {"max_pinned_fraction": 0.4},
+            }
+        )
+        assert isinstance(cfg, RetentionConfig)
+        assert cfg.enabled is True
+        assert isinstance(cfg.ttl, TTLConfig)
+        assert cfg.ttl.alpha == 0.5
+        assert cfg.ttl.default_ttl == 2.0
+        assert cfg.ttl.safety_factor == 1.8
+        assert cfg.ttl.use_per_tool_ema is False
+        assert cfg.ttl.use_ema is True
+        assert isinstance(cfg.pin_manager, PinManagerConfig)
+        assert cfg.pin_manager.max_pinned_fraction == 0.4
+
+    def test_uses_dataclass_defaults_for_missing_fields(self) -> None:
+        from src.retention.config import RetentionConfig
+        # Only specify enabled — every other field should fall back to dataclass defaults.
+        cfg = build_retention_config({"enabled": True})
+        assert isinstance(cfg, RetentionConfig)
+        assert cfg.ttl.alpha == 0.3            # TTLConfig default
+        assert cfg.pin_manager.max_pinned_fraction == 0.3  # PinManagerConfig default
+
+    def test_ignores_unknown_yaml_keys(self) -> None:
+        # If we ever add fields to retention.yaml that don't exist in the
+        # dataclass, build_retention_config should drop them rather than crash.
+        from src.retention.config import RetentionConfig
+        cfg = build_retention_config(
+            {
+                "enabled": True,
+                "ttl": {"alpha": 0.4, "future_field_we_havent_added": 42},
+                "pin_manager": {"max_pinned_fraction": 0.25, "noise": "ok"},
+            }
+        )
+        assert isinstance(cfg, RetentionConfig)
+        assert cfg.ttl.alpha == 0.4
+        assert cfg.pin_manager.max_pinned_fraction == 0.25
+
+
+class TestRetentionYamlEndToEnd:
+    """The actual configs/retention.yaml file should be loadable into a
+    RetentionConfig without modification. Catches schema drift between the
+    YAML committed to the repo and Daksh's dataclass."""
+
+    def test_committed_yaml_parses(self) -> None:
+        import yaml
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        with open(repo_root / "configs" / "retention.yaml") as f:
+            cfg = yaml.safe_load(f)
+
+        retention = build_retention_config(
+            cfg.get("engine", {}).get("retention", {})
+        )
+        assert retention is not None
+        assert retention.enabled is True
+        assert 0 < retention.pin_manager.max_pinned_fraction <= 1.0

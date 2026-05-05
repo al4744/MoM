@@ -118,14 +118,120 @@ pip install -r requirements.txt
 # huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir models/mistral-7b
 ```
 
-## Quick Start
+## Running the evaluation pipeline
+
+Workstream D's runner (`evaluation/run_eval.py`) drives one config across its
+trace set, collects metrics, and writes per-trace JSON + an aggregated summary.
+Three execution modes:
+
+| Mode | Flag | Engine used | Needs vLLM? | Needs GPU? |
+|------|------|-------------|:-----------:|:----------:|
+| Dry-run | `--dry-run` | (none — sentinel `-1.0` values) | no | no |
+| Mock | `--mock-engine` | `evaluation.engine_adapter.MockEngine` | no | no |
+| Real | (default) | vendored `vllm.LLM` + `RetentionConfig` if enabled | yes | yes |
+
+### Sanity checks (no GPU needed)
 
 ```bash
-# Generate synthetic traces
+# Unit tests — should print "8X passed in <2s"
+make test
+
+# Smoke run — exercises the real run_eval pipeline through MockEngine
+# end-to-end, then emits an ablation table. Proves wiring before GCP.
+make smoke
+```
+
+### Real run (GPU + vLLM required)
+
+```bash
+# 0. One-time: pull, install vendored vLLM, download model
+git pull origin main
+cd vllm && pip install -e . && cd ..
+pip install -r requirements.txt
+huggingface-cli login                                   # gated model
+huggingface-cli download meta-llama/Meta-Llama-3-8B \
+    --local-dir models/llama3-8b
+
+# 1. Baseline (vanilla vLLM, no retention)
+PYTHONPATH=. python evaluation/run_eval.py \
+    --config configs/baseline.yaml \
+    --output results/baseline-$(date +%Y%m%d-%H%M)/
+
+# 2. Retention (Workstream A path active)
+PYTHONPATH=. python evaluation/run_eval.py \
+    --config configs/retention.yaml \
+    --output results/retention-$(date +%Y%m%d-%H%M)/
+
+# 3. Pairwise ablation (baseline vs retention)
+make ablate \
+    A=baseline-20260505-1530 \
+    B=retention-20260505-1545
+
+# 4. Cross-config comparison (every results/* subdir)
+make compare
+```
+
+### Verifying retention is actually firing
+
+Daksh's `PinManager` emits structured events to
+`results/<run>/events.jsonl` via `src/retention/events.py`. After a retention
+run:
+
+```bash
+RUN=results/retention-20260505-1545
+ls $RUN/                                                # expect events.jsonl
+grep '"event_type":"pin"'   $RUN/events.jsonl | wc -l   # > 0  → pins fired
+grep '"event_type":"reuse"' $RUN/events.jsonl | wc -l   # > 0  → KV blocks reused
+grep '"event_type":"pin_rejected_budget"' $RUN/events.jsonl | wc -l
+                                                         # 0 ideally — non-zero
+                                                         # means max_pinned_fraction
+                                                         # was hit
+```
+
+If all three counts are zero, retention silently did nothing — likely a
+config or engine wiring problem. Open an issue.
+
+### Output layout
+
+```
+results/<run_name>/
+├── 5turn-mixed.json     # full TraceResult per trace
+├── 10turn-mixed.json
+├── 25turn-mixed.json
+├── 50turn-mixed.json
+├── summary.json         # RunSummary (consumed by comparison_table.py)
+└── events.jsonl         # Daksh's pin/reuse/expire/evict event log
+```
+
+### Make targets at a glance
+
+| Target | What it does |
+|--------|--------------|
+| `make test` | Run all unit tests under `evaluation/tests/` |
+| `make smoke` | Real eval pipeline through `MockEngine` (CPU-only) |
+| `make eval-baseline` / `make eval-retention` | Dry-run sentinel runs |
+| `make eval-all` | Dry-run every YAML under `configs/` |
+| `make compare` | Cross-config markdown table from `results/*/summary.json` |
+| `make ablate A=<base> B=<cand>` | Pairwise Δ + speedup table |
+| `make clean` | Wipe `results/`, `__pycache__`, `.pytest_cache` |
+
+### What's wired vs. stubbed
+
+| Knob | YAML location | Status |
+|------|---------------|:------:|
+| KV retention (Workstream A) | `engine.retention.*` | ✅ wired through `LLM(retention_config=...)` |
+| KV quantization (Workstream B) | `engine.quantization.kv_cache` | ⏳ slot defined, engine support TODO |
+| torch.compile (Workstream C) | `engine.torch_compile.enabled` | ⏳ slot defined, env-var driver TODO |
+| LMCache (Workstream A comparison) | `engine.lmcache.enabled` | ⏳ slot defined, integration TODO |
+
+## Quick Start (full project)
+
+```bash
+# Generate synthetic traces (Workstream C — not yet implemented)
 python benchmarks/trace_generator.py --turns 50 --output traces/
 
-# Run baseline benchmark
-python benchmarks/run_benchmark.py --config configs/baseline.yaml
+# Run baseline benchmark (uses evaluation/run_eval.py — see above)
+make eval-baseline
 ```
 
 ## References

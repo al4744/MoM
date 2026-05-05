@@ -601,8 +601,15 @@ class LLMEngine:
         engine_args: EngineArgs,
         usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
         stat_loggers: Optional[Dict[str, StatLoggerBase]] = None,
+        retention_config: Optional[Any] = None,
     ) -> "LLMEngine":
-        """Creates an LLM engine from the engine arguments."""
+        """Creates an LLM engine from the engine arguments.
+
+        Workstream A note: ``retention_config`` is forwarded to the engine
+        constructor so the convenience ``LLM`` wrapper can opt into the
+        tool-aware KV retention path. See ``src/retention/config.py`` for the
+        concrete dataclass shape.
+        """
         # Create the engine configs.
         engine_config = engine_args.create_engine_config()
         executor_class = cls._get_executor_cls(engine_config)
@@ -613,6 +620,7 @@ class LLMEngine:
             log_stats=not engine_args.disable_log_stats,
             usage_context=usage_context,
             stat_loggers=stat_loggers,
+            retention_config=retention_config,
         )
 
         return engine

@@ -1,6 +1,10 @@
 # Workstream D — Tool-aware KV retention configuration (Workstream A only).
-# Builds on baseline by enabling pin-or-evict with TTL prediction.
-# See src/retention/{config,pin_manager,ttl_predictor}.py for impl details.
+# Field names under `engine.retention` MUST match src/retention/config.py:
+#   RetentionConfig(enabled, ttl: TTLConfig, pin_manager: PinManagerConfig)
+#   TTLConfig(alpha, default_ttl, safety_factor, use_per_tool_ema, use_ema)
+#   PinManagerConfig(max_pinned_fraction)
+# evaluation/engine_adapter.build_real_engine parses this dict directly into
+# those dataclasses and forwards as `retention_config=` to vllm.LLM.
 
 name: retention
 
@@ -13,19 +17,26 @@ model:
 engine:
   retention:
     enabled: true
-    # Maximum fraction of total GPU blocks that can be held in pinned state.
-    # Above this, new pin requests are rejected (logged as pin_rejected_budget).
-    max_pinned_fraction: 0.30
-    # TTL predictor: EMA-updated lookup keyed on tool_name.
     ttl:
-      default_ms: 1500          # used until per-tool EMA has >= min_samples
-      ema_alpha: 0.2
-      min_samples: 3
-      cap_ms: 10000
+      # EMA smoothing factor for per-tool latency tracking.
+      alpha: 0.3
+      # Initial TTL guess (seconds) before any EMA samples exist.
+      default_ttl: 1.0
+      # Multiplier applied to predicted latency → TTL window (covers tool jitter).
+      safety_factor: 1.5
+      # Ablation: false → use a single global EMA across all tools.
+      use_per_tool_ema: true
+      # Ablation: false → fixed default_ttl * safety_factor for every tool.
+      use_ema: true
+    pin_manager:
+      # Cap on the fraction of total GPU blocks that can sit pinned at once.
+      # Above this, new pin requests are rejected (event_type=pin_rejected_budget).
+      max_pinned_fraction: 0.30
+
   quantization:
-    kv_cache: null
+    kv_cache: null            # null | int8 | int4   (Workstream B knob)
   torch_compile:
-    enabled: false
+    enabled: false            # Workstream C knob
   lmcache:
     enabled: false
 

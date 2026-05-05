@@ -171,19 +171,54 @@ class MockEngine:
 # Real engine factory — lazy vLLM import
 # ---------------------------------------------------------------------------
 
+def build_retention_config(retention_dict: dict[str, Any]) -> Any:
+    """Construct a ``src.retention.config.RetentionConfig`` from a parsed YAML
+    dict. Returns ``None`` if retention is disabled or absent.
+
+    The dict shape matches ``configs/retention.yaml`` and Daksh's dataclasses:
+
+        retention:
+          enabled: true
+          ttl: {alpha, default_ttl, safety_factor, use_per_tool_ema, use_ema}
+          pin_manager: {max_pinned_fraction}
+    """
+    if not retention_dict or not retention_dict.get("enabled", False):
+        return None
+    from src.retention.config import (
+        PinManagerConfig,
+        RetentionConfig,
+        TTLConfig,
+    )
+    ttl_kwargs = retention_dict.get("ttl", {}) or {}
+    pin_kwargs = retention_dict.get("pin_manager", {}) or {}
+    return RetentionConfig(
+        enabled=True,
+        ttl=TTLConfig(**{k: v for k, v in ttl_kwargs.items()
+                         if k in {"alpha", "default_ttl", "safety_factor",
+                                  "use_per_tool_ema", "use_ema"}}),
+        pin_manager=PinManagerConfig(
+            **{k: v for k, v in pin_kwargs.items()
+               if k in {"max_pinned_fraction"}}
+        ),
+    )
+
+
 def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
     """Construct a real vLLM ``LLM`` from a parsed config dict.
 
     Imports vLLM lazily so unit tests + dry-run never pay the cost. Raises a
     clear error if vLLM is missing.
 
-    Retention support note
-    ----------------------
-    Daksh's vLLM patch adds ``retention_config`` as a keyword on
-    ``LLMEngine.__init__`` (see ``vllm/engine/llm_engine.py:232``), but the
-    convenience ``LLM`` wrapper in ``vllm/entrypoints/llm.py`` does not yet
-    forward it. To exercise retention end-to-end, callers currently need to
-    drive ``LLMEngine`` directly. Tracked as TODO; flag in meeting.
+    Retention is wired through the ``retention_config`` kwarg added by the
+    Workstream A patch to ``vllm/entrypoints/llm.py`` and
+    ``vllm/engine/llm_engine.py::from_engine_args``. When
+    ``cfg["engine"]["retention"]["enabled"]`` is true, this constructs a
+    ``RetentionConfig`` from the YAML and forwards it; PinManager is then
+    instantiated inside ``LLMEngine.__init__``.
+
+    Quantization (Workstream B) and torch.compile (Workstream C) knobs are
+    documented but presently no-op until those workstreams land their engine
+    surface.
     """
     try:
         from vllm import LLM
@@ -210,20 +245,18 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
     quant = engine_cfg.get("quantization", {}).get("kv_cache")
     if quant is not None:
         # When B lands, this should set kv_cache_dtype or similar.
-        # For now the knob is recorded so the run logs reflect intent.
         llm_kwargs["kv_cache_dtype"] = quant
 
     # torch.compile (Workstream C) — engine flag, currently env-driven in vLLM.
     if engine_cfg.get("torch_compile", {}).get("enabled"):
-        # vLLM v0.6.4 exposes torch.compile via VLLM_USE_TORCH_COMPILE env var
-        # rather than a constructor flag; setter belongs to Workstream C.
+        # vLLM v0.6.4 exposes torch.compile via VLLM_USE_TORCH_COMPILE env var.
+        # Setting the env var is Workstream C's responsibility.
         pass
 
-    if engine_cfg.get("retention", {}).get("enabled"):
-        # See docstring — needs LLMEngine-direct construction.
-        # The current path falls through to vanilla LLM; retention will not
-        # actually be active. Smoke run is still valid as a baseline check.
-        pass
+    # Retention (Workstream A) — forward RetentionConfig if enabled.
+    retention_config = build_retention_config(engine_cfg.get("retention", {}))
+    if retention_config is not None:
+        llm_kwargs["retention_config"] = retention_config
 
     return LLM(**{k: v for k, v in llm_kwargs.items() if v is not None})
 
