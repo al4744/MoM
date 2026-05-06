@@ -1,0 +1,55 @@
+# Workstream D — Retention ablation: TTL predictor with EMA disabled.
+#
+# Same as configs/retention.yaml except `engine.retention.ttl.use_ema = false`.
+# The predictor falls back to a constant TTL of `default_ttl * safety_factor`
+# for every tool, with no learning across observed tool latencies.
+#
+# Used to attribute speedup to the *predictor itself* rather than just the
+# pin-or-evict mechanism. If retention with use_ema=false is markedly slower
+# than retention with use_ema=true, the EMA predictor is doing real work.
+
+name: retention_no_ema
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: true
+    ttl:
+      alpha: 0.3
+      default_ttl: 1.0
+      safety_factor: 1.5
+      use_per_tool_ema: true
+      use_ema: false              # ← ablation flip vs retention.yaml
+    pin_manager:
+      max_pinned_fraction: 0.30
+  prefix_caching:
+    enabled: true
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024

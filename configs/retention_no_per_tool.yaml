@@ -1,0 +1,56 @@
+# Workstream D — Retention ablation: per-tool tracking disabled.
+#
+# Same as configs/retention.yaml except `engine.retention.ttl.use_per_tool_ema
+# = false`. The predictor maintains a single global EMA across all tools
+# rather than one per tool name.
+#
+# Used to attribute speedup to *per-tool* tracking specifically. If retention
+# with per-tool EMA is faster than retention with a single global EMA, the
+# per-tool component is doing real work. If they're indistinguishable, the
+# global signal is sufficient and per-tool tracking can be simplified out.
+
+name: retention_no_per_tool
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: true
+    ttl:
+      alpha: 0.3
+      default_ttl: 1.0
+      safety_factor: 1.5
+      use_per_tool_ema: false     # ← ablation flip vs retention.yaml
+      use_ema: true
+    pin_manager:
+      max_pinned_fraction: 0.30
+  prefix_caching:
+    enabled: true
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024

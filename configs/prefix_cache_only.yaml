@@ -1,0 +1,49 @@
+# Workstream D — Isolation configuration for the paper.
+#
+# Prefix caching ON, retention OFF.  Used to attribute the speedup correctly:
+#   - baseline             (PC off, retention off) → vanilla vLLM reference
+#   - prefix_cache_only    (PC on,  retention off) → vLLM's built-in prefix cache
+#   - retention            (PC on,  retention on)  → our pin-or-evict on top
+#
+# The (prefix_cache_only → retention) delta is the contribution attributable
+# to PinManager *above and beyond* what vLLM's existing prefix cache already
+# delivers.  Without this row, the "1.7x speedup" claim could be challenged as
+# "you just turned on prefix caching."
+
+name: prefix_cache_only
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: false
+  prefix_caching:
+    enabled: true            # ← key difference vs baseline.yaml
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024

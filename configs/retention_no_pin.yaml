@@ -1,0 +1,62 @@
+# Workstream D — Retention ablation: pin budget effectively zero.
+#
+# Same as configs/retention.yaml except `engine.retention.pin_manager
+# .max_pinned_fraction = 0.001`. With a typical 1700-block budget on L4,
+# this leaves a pin budget of 1 block — every realistic pin attempt is
+# rejected with event_type=pin_rejected_budget.
+#
+# Why 0.001 and not 0.0? Daksh's PinManager validates 0 < fraction <= 1.0.
+# 0.001 is functionally equivalent to "no pinning" without requiring a
+# code change.
+#
+# Used as an internal consistency check: this config should produce numbers
+# essentially identical to configs/prefix_cache_only.yaml because the
+# PinManager is constructed but does nothing observable. If the two configs
+# diverge significantly, something else is going on (e.g. PinManager is
+# adding non-trivial scheduling overhead even when unused).
+
+name: retention_no_pin
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: true
+    ttl:
+      alpha: 0.3
+      default_ttl: 1.0
+      safety_factor: 1.5
+      use_per_tool_ema: true
+      use_ema: true
+    pin_manager:
+      max_pinned_fraction: 0.001  # ← effectively disables pinning
+  prefix_caching:
+    enabled: true
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
