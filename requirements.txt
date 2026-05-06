@@ -1,16 +1,26 @@
 # =============================================================================
 # MoM Project Dependencies
 # =============================================================================
-# vLLM is vendored in ./vllm/ (v0.6.4.post1) — install via:
-#   cd vllm && pip install -e . && cd ..
-# See README.md for full setup instructions.
+# Verified install order (GPU VM with CUDA 12.x):
+#
+#   1. pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+#   2. pip install vllm==0.6.4.post1
+#   3. pip install -r vllm/requirements-common.txt
+#   4. pip install transformers==4.46.3
+#   5. pip install -r requirements.txt
+#   6. Overlay modified vLLM Python files (see README.md for the 7-file list)
+#
+# torch and transformers are pinned here for reference; install torch via the
+# PyTorch index URL in step 1 to get the correct CUDA variant.
 # =============================================================================
+
+# Core ML stack (pinned to verified-working versions)
+torch==2.5.1
+transformers==4.46.3
+vllm==0.6.4.post1
 
 # Agent frameworks
 langchain>=0.1.0
-
-# KV cache management (comparison baseline)
-lmcache>=0.1.0
 
 # Experiment tracking
 wandb>=0.16.0
