@@ -284,9 +284,87 @@ results/<run_name>/
 | Knob | YAML location | Status |
 |------|---------------|:------:|
 | KV retention (Workstream A) | `engine.retention.*` | ✅ wired through `LLM(retention_config=...)` |
-| KV quantization (Workstream B) | `engine.quantization.kv_cache` | ⏳ slot defined, engine support TODO |
+| KV quantization (Workstream B) | `engine.quantization.kv_cache` | ✅ INT8/INT4 integrated end-to-end |
+| Prefix caching | `engine.prefix_caching.enabled` | ✅ forwarded to vLLM (required when retention enabled) |
 | torch.compile (Workstream C) | `engine.torch_compile.enabled` | ⏳ slot defined, env-var driver TODO |
-| LMCache (Workstream A comparison) | `engine.lmcache.enabled` | ⏳ slot defined, integration TODO |
+| ~~LMCache~~ | — | ❌ descoped — pin-or-evict over PC supersedes LMCache-style tiering |
+
+## Ablation methodology
+
+The eval matrix is structured to attribute speedup to specific contributions
+rather than to a vague "everything bundled". Every paper claim should map
+to one of these deltas.
+
+### Primary attribution — three configs, two deltas
+
+| Config | Prefix cache | Retention | What it captures |
+|---|:---:|:---:|---|
+| `baseline.yaml` | ❌ | ❌ | Vanilla vLLM (reference) |
+| `prefix_cache_only.yaml` | ✅ | ❌ | vLLM's built-in PC contribution |
+| `retention.yaml` | ✅ | ✅ | PC + our pin-or-evict on top |
+
+| Delta | Attribution |
+|---|---|
+| `baseline → prefix_cache_only` | Speedup from vLLM's existing prefix caching |
+| **`prefix_cache_only → retention`** | **Speedup specifically attributable to our pin-or-evict policy** |
+| `baseline → retention` | Total combined speedup (the paper's headline) |
+
+The fourth combination (`PC=off, retention=on`) does not exist by design:
+Daksh's `LLMEngine.__init__` raises `ValueError` if retention is enabled
+without prefix caching, because pin-or-evict relies on the prefix-cache hash
+lookup to revive held blocks. We document this constraint rather than work
+around it.
+
+### Retention component ablations — three configs
+
+These hold retention enabled and toggle individual sub-mechanisms.
+
+| Config | Toggle | What it isolates |
+|---|---|---|
+| `retention_no_ema.yaml` | `ttl.use_ema = false` | Predictor learning: with EMA off, TTL is a constant `default_ttl × safety_factor` |
+| `retention_no_per_tool.yaml` | `ttl.use_per_tool_ema = false` | Per-tool tracking: single global EMA across all tools |
+| `retention_no_pin.yaml` | `pin_manager.max_pinned_fraction = 0.001` | Pin budget: effectively zero, every pin rejected |
+
+| Delta | Attribution |
+|---|---|
+| `retention_no_ema → retention` | The TTL-learning predictor's contribution |
+| `retention_no_per_tool → retention` | Per-tool latency tracking's contribution |
+| `retention_no_pin → retention` | The pin mechanism itself (vs. PC alone) |
+
+`retention_no_pin` doubles as an internal consistency check: it should
+produce numbers essentially identical to `prefix_cache_only` because the
+PinManager is constructed but does nothing observable.
+
+### Quantization ablations — already in the matrix
+
+| Config | What it captures |
+|---|---|
+| `retention_int8.yaml` | INT8 KV quant (~50% KV memory) |
+| `retention_int4.yaml` | INT4 KV quant (~25% KV memory, more lossy) |
+
+| Delta | Attribution |
+|---|---|
+| `retention → retention_int8` | INT8's memory savings, accuracy cost |
+| `retention → retention_int4` | INT4's memory savings, accuracy cost |
+
+### Accuracy attribution
+
+Latency-only is half the story. `scripts/run_accuracy_eval.py` runs
+[lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness)
+against each engine config (default task: MMLU). Paired with the latency
+tables, this defends the quantization claims:
+
+```bash
+PYTHONPATH=. python scripts/run_accuracy_eval.py \
+    --config configs/retention_int8.yaml \
+    --output results/<run>/retention_int8/ \
+    --tasks mmlu \
+    --limit 50
+```
+
+Accuracy results land in `<output>/accuracy.json` and `summary.json` is
+updated in place with `mean_task_accuracy`, picked up by the comparison
+and ablation tables automatically.
 
 ## Quick Start (full project)
 
