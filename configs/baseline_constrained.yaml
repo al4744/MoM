@@ -1,0 +1,54 @@
+# Workstream D — Memory-pressure baseline.
+#
+# Same as baseline.yaml except gpu_memory_utilization is dropped from 0.85
+# to 0.77, shrinking the KV cache budget on L4 from ~3.4 GB (1737 blocks)
+# to ~0.7 GB (~480 blocks ≈ 7700 tokens). max_model_len capped at 4096 so
+# vLLM's per-request KV requirement fits in the constrained budget. Tool
+# gaps are real 2-second sleeps (tool_latency_ms: 2000) so the wallclock
+# window where another request could fill memory is meaningful.
+#
+# Used to test whether vLLM's prefix cache survives memory pressure
+# without retention's pinning. Compared against retention_constrained.yaml
+# to attribute pin-or-evict's value specifically under tight KV budget.
+
+name: baseline_constrained
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 4096               # ← required when gmu drops; full 8192 needs more KV than 0.77 gives
+  gpu_memory_utilization: 0.77      # ← tight KV budget
+
+engine:
+  retention:
+    enabled: false
+  prefix_caching:
+    enabled: false
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000             # ← real 2-sec tool gap
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000

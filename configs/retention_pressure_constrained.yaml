@@ -1,0 +1,62 @@
+# Workstream D — Memory-pressure retention tuned for the regime.
+#
+# Same as retention_constrained.yaml except retention parameters are dialed
+# up specifically for memory-pressure scenarios:
+#
+#   - max_pinned_fraction: 0.50   (vs 0.30) — bigger pin pool so more
+#                                  conversations can be protected at once
+#   - default_ttl: 5.0            (vs 1.0) — TTL window covers our actual
+#                                  2-second tool gaps with ample slack
+#
+# This is the "retention turned up to 11" config. If retention is going to
+# beat prefix_cache_only_constrained anywhere, it's here.
+
+name: retention_pressure_constrained
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 4096
+  gpu_memory_utilization: 0.77
+
+engine:
+  retention:
+    enabled: true
+    ttl:
+      alpha: 0.3
+      default_ttl: 5.0              # ← bumped from 1.0
+      safety_factor: 1.5
+      use_per_tool_ema: true
+      use_ema: true
+    pin_manager:
+      max_pinned_fraction: 0.50     # ← bumped from 0.30
+  prefix_caching:
+    enabled: true
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000
+  - id: 10turn-mixed
+    turns: 10
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000
+  - id: 25turn-mixed
+    turns: 25
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000
+  - id: 50turn-mixed
+    turns: 50
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+    tool_latency_ms: 2000
