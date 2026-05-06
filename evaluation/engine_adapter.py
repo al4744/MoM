@@ -274,7 +274,14 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
     if retention_config is not None:
         llm_kwargs["retention_config"] = retention_config
 
-    return LLM(**{k: v for k, v in llm_kwargs.items() if v is not None})
+    _all_kwargs = {k: v for k, v in llm_kwargs.items() if v is not None}
+    try:
+        return LLM(**_all_kwargs)
+    except TypeError:
+        # Stock vLLM's EngineArgs rejects custom workstream kwargs — retry without them.
+        _workstream_extras = {"kv_quant_config", "retention_config"}
+        _base_kwargs = {k: v for k, v in _all_kwargs.items() if k not in _workstream_extras}
+        return LLM(**_base_kwargs)
 
 
 # ---------------------------------------------------------------------------

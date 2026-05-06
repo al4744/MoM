@@ -10,12 +10,16 @@ model:
 engine:
   retention:
     enabled: true
-    max_pinned_fraction: 0.30
     ttl:
-      default_ms: 1500
-      ema_alpha: 0.2
-      min_samples: 3
-      cap_ms: 10000
+      alpha: 0.3
+      default_ttl: 1.0
+      safety_factor: 1.5
+      use_per_tool_ema: true
+      use_ema: true
+    pin_manager:
+      max_pinned_fraction: 0.30
+  prefix_caching:
+    enabled: true
   quantization:
     kv_cache: int8
     group_size: 64
