@@ -1,3 +1,15 @@
-# Workstream C - torch.compile integration
-# Applied to prefill and decode paths independently,
-# benchmarked across context lengths (1K, 4K, 8K, 16K tokens)
+"""Workstream C helpers for torch.compile and profiling."""
+
+from src.compile.config import (
+    CompileConfig,
+    ProfileConfig,
+    WorkstreamCConfig,
+    load_workstream_c_config,
+)
+
+__all__ = [
+    "CompileConfig",
+    "ProfileConfig",
+    "WorkstreamCConfig",
+    "load_workstream_c_config",
+]

@@ -31,6 +31,7 @@ EXPECTED: dict[str, dict] = {
                              "use_ema": True, "use_per_tool_ema": True, "pin_max": 0.01},
     "retention_int8":       {"retention": True,  "prefix_caching": True,  "kv_quant": "int8"},
     "retention_int4":       {"retention": True,  "prefix_caching": True,  "kv_quant": "int4"},
+    "compile_profile":      {"retention": False, "prefix_caching": False, "kv_quant": None},
 }
 
 

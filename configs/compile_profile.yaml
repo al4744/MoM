@@ -1,0 +1,55 @@
+# Workstream C - opt-in torch.compile + profiling configuration.
+# This config is for GPU/VM benchmarking only. It does not replace the
+# baseline or retention metric definitions, and no results are implied here.
+
+name: compile-profile
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+
+engine:
+  retention:
+    enabled: false
+  prefix_caching:
+    enabled: false
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+compile:
+  enabled: true
+  targets: ["prefill", "decode"]
+  backend: "inductor"
+  mode: "default"
+  dynamic: false
+  fullgraph: false
+  warmup_iters: 1
+
+profile:
+  enabled: false
+  pytorch_profiler: false
+  nsight: false
+  record_shapes: true
+  profile_memory: true
+  with_stack: false
+  output_dir: results/profiles
+
+traces:
+  - id: 1k-5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 1024
+  - id: 4k-5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 4096
+  - id: 8k-5turn-mixed
+    turns: 5
+    tool_latency_dist: mixed
+    prompt_tokens: 8192

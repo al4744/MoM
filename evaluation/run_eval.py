@@ -55,6 +55,14 @@ from evaluation.engine_adapter import (
 )
 from evaluation.metrics import RunSummary, TimingContext, TraceResult, TurnMetrics
 from evaluation.trace_loader import TraceSpec, TraceTurn, fixture_trace
+from src.compile.config import load_workstream_c_config
+from src.compile.runtime import (
+    compile_metadata,
+    maybe_profile,
+    profiler_step,
+    record_phase,
+    write_nsight_command,
+)
 from src.quantization.config import load_kv_quant_config
 
 
@@ -125,6 +133,48 @@ def parse_args() -> argparse.Namespace:
         default=_default_wandb_mode(),
         help="WandB mode. Defaults to WANDB_MODE if set, otherwise online.",
     )
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable Workstream C torch.compile for this run, overriding config.",
+    )
+    p.add_argument(
+        "--compile-targets",
+        default=None,
+        help="Comma-separated requested compile targets: prefill,decode.",
+    )
+    p.add_argument(
+        "--compile-backend",
+        default=None,
+        help="torch.compile backend to request through vLLM's plugin registry.",
+    )
+    p.add_argument(
+        "--compile-warmup-iters",
+        type=int,
+        default=None,
+        help="Number of warmup iterations recorded in metadata/config.",
+    )
+    p.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable Workstream C profiling for this run, overriding config.",
+    )
+    p.add_argument(
+        "--pytorch-profiler",
+        action="store_true",
+        help="Enable PyTorch Profiler output for this run.",
+    )
+    p.add_argument(
+        "--nsight",
+        action="store_true",
+        help="Write an Nsight Systems command script for this exact run.",
+    )
+    p.add_argument(
+        "--profile-output-dir",
+        type=Path,
+        default=None,
+        help="Directory for profiler traces/command scripts.",
+    )
     return p.parse_args()
 
 
@@ -138,6 +188,49 @@ def load_config(path: Path) -> dict[str, Any]:
         ) from e
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def _apply_workstream_c_cli_overrides(
+    cfg: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Apply opt-in compile/profile CLI flags without changing YAML defaults."""
+    cfg = dict(cfg)
+    if args.compile:
+        compile_cfg = dict(cfg.get("compile", {}))
+        compile_cfg["enabled"] = True
+        cfg["compile"] = compile_cfg
+    if args.compile_targets:
+        compile_cfg = dict(cfg.get("compile", {}))
+        compile_cfg["targets"] = [
+            target.strip()
+            for target in args.compile_targets.split(",")
+            if target.strip()
+        ]
+        cfg["compile"] = compile_cfg
+    if args.compile_backend:
+        compile_cfg = dict(cfg.get("compile", {}))
+        compile_cfg["backend"] = args.compile_backend
+        cfg["compile"] = compile_cfg
+    if args.compile_warmup_iters is not None:
+        compile_cfg = dict(cfg.get("compile", {}))
+        compile_cfg["warmup_iters"] = args.compile_warmup_iters
+        cfg["compile"] = compile_cfg
+
+    if args.profile or args.pytorch_profiler or args.nsight or args.profile_output_dir:
+        profile_cfg = dict(cfg.get("profile", {}))
+        if args.profile:
+            profile_cfg["enabled"] = True
+        if args.pytorch_profiler:
+            profile_cfg["enabled"] = True
+            profile_cfg["pytorch_profiler"] = True
+        if args.nsight:
+            profile_cfg["enabled"] = True
+            profile_cfg["nsight"] = True
+        if args.profile_output_dir is not None:
+            profile_cfg["output_dir"] = str(args.profile_output_dir)
+        cfg["profile"] = profile_cfg
+    return cfg
 
 
 def _configure_retention_events(output_dir: Path, *, use_wandb: bool) -> None:
@@ -232,6 +325,7 @@ def run_trace(
     engine: EngineProtocol,
     spec: TraceSpec,
     cfg: dict[str, Any],
+    profiler: Any | None = None,
 ) -> TraceResult:
     """Drive one TraceSpec through an engine and collect TurnMetrics.
 
@@ -254,6 +348,7 @@ def run_trace(
     trace = TraceResult(config_name=config_name, trace_id=spec.trace_id)
     trace.metadata["model"] = spec.model
     trace.metadata["tool_latency_dist"] = spec.tool_latency_dist
+    trace.metadata.update(compile_metadata(load_workstream_c_config(cfg)))
 
     # Stable program_id for the whole trace — identifies this agent session to
     # the retention system so KV blocks can be pinned across tool-call turns.
@@ -306,7 +401,8 @@ def run_trace(
         prompt = _placeholder_prompt(turn, conversation)
         sp = _make_sampling_params(turn)
 
-        with TimingContext() as turn_timer:
+        phase = "post_tool_prefill" if last_was_tool_return else "prefill"
+        with record_phase(f"mom.eval.{phase}"), TimingContext() as turn_timer:
             import inspect as _inspect
             _gen_sig = _inspect.signature(engine.generate)
             _extra = {}
@@ -320,6 +416,7 @@ def run_trace(
                 use_tqdm=False,
                 **_extra,
             )
+        profiler_step(profiler)
 
         if not outputs:
             continue
@@ -407,7 +504,16 @@ def run_real(
     if engine is None:
         engine = build_real_engine(cfg)
 
-    traces = [run_trace(engine, spec, cfg) for spec in specs]
+    workstream_c = load_workstream_c_config(cfg)
+    _run_compile_warmup(engine, cfg, specs, workstream_c.compile.warmup_iters)
+    with maybe_profile(engine, workstream_c.profile) as profiler:
+        traces = [run_trace(engine, spec, cfg, profiler=profiler) for spec in specs]
+
+    if workstream_c.compile.enabled:
+        for trace in traces:
+            trace.metadata["compile_warmup_iters_completed"] = (
+                workstream_c.compile.warmup_iters
+            )
 
     # Annotate Workstream B quantization metrics from config.
     quant_cfg = load_kv_quant_config(cfg.get("engine", {}).get("quantization"))
@@ -422,6 +528,29 @@ def run_real(
     return traces
 
 
+def _run_compile_warmup(
+    engine: EngineProtocol,
+    cfg: dict[str, Any],
+    specs: list[TraceSpec],
+    warmup_iters: int,
+) -> None:
+    workstream_c = load_workstream_c_config(cfg)
+    if not workstream_c.compile.enabled or warmup_iters <= 0 or not specs:
+        return
+
+    warmup_spec = fixture_trace(
+        trace_id="compile-warmup",
+        num_turns=1,
+        tool_every=999,
+        model=specs[0].model,
+        prompt_tokens=specs[0].prompt_tokens,
+    )
+    warmup_cfg = dict(cfg)
+    warmup_cfg["name"] = f"{cfg.get('name', 'unknown')}-warmup"
+    for _ in range(warmup_iters):
+        run_trace(engine, warmup_spec, warmup_cfg)
+
+
 # ---------------------------------------------------------------------------
 # CLI entry
 # ---------------------------------------------------------------------------
@@ -429,6 +558,7 @@ def run_real(
 def main() -> int:
     args = parse_args()
     cfg = load_config(args.config)
+    cfg = _apply_workstream_c_cli_overrides(cfg, args)
 
     config_name = cfg.get("name", args.config.stem)
     trace_specs = cfg.get("traces", [])
@@ -437,6 +567,14 @@ def main() -> int:
         return 1
 
     args.output.mkdir(parents=True, exist_ok=True)
+    workstream_c = load_workstream_c_config(cfg)
+    nsight_script = write_nsight_command(
+        config=workstream_c.profile,
+        output_dir=args.output,
+        argv=[sys.executable, "evaluation/run_eval.py", *sys.argv[1:]],
+    )
+    if nsight_script is not None:
+        print(f"  wrote {nsight_script}")
 
     # Subscribe Daksh's retention event log to a per-run JSONL file.
     # No-op for dry-run / mock modes since no PinManager is active, but

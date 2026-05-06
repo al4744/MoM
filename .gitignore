@@ -33,6 +33,10 @@ profiling/*.qdrep
 *.nsys-rep
 *.qdrep
 *.trace
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.pt.trace.json
 
 # Model weights (download separately, root-level only)
 /models/

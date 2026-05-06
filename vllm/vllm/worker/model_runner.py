@@ -1650,7 +1650,15 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             model_forward_end = torch.cuda.Event(enable_timing=True)
             model_forward_start.record()
 
-        with set_forward_context(model_input.attn_metadata):
+        if prefill_meta is not None and decode_meta is not None:
+            mom_phase = "mixed"
+        elif prefill_meta is not None or model_input.is_prompt:
+            mom_phase = "prefill"
+        else:
+            mom_phase = "decode"
+
+        with torch.profiler.record_function(f"mom.vllm.{mom_phase}"), \
+                set_forward_context(model_input.attn_metadata):
             hidden_or_intermediate_states = model_executable(
                 input_ids=model_input.input_tokens,
                 positions=model_input.input_positions,
