@@ -307,13 +307,18 @@ def run_trace(
         sp = _make_sampling_params(turn)
 
         with TimingContext() as turn_timer:
+            import inspect as _inspect
+            _gen_sig = _inspect.signature(engine.generate)
+            _extra = {}
+            if "program_id" in _gen_sig.parameters:
+                _extra["program_id"] = program_id
+                _extra["is_tool_call_pending"] = is_tool_call_pending
+                _extra["tool_name"] = pending_tool_name
             outputs = engine.generate(
                 prompt,
                 sp,
                 use_tqdm=False,
-                program_id=program_id,
-                is_tool_call_pending=is_tool_call_pending,
-                tool_name=pending_tool_name,
+                **_extra,
             )
 
         if not outputs:
