@@ -1492,11 +1492,14 @@ class Scheduler:
             if (self.pin_manager is not None
                     and getattr(seq_group, "is_tool_call_pending", False)
                     and getattr(seq_group, "program_id", None) is not None):
-                block_tables = getattr(self.block_manager, "block_tables", {})
+                # Count blocks from sequence length + block size — robust
+                # across different block manager implementations (the internal
+                # block_tables dict may not be accessible in all vLLM builds).
+                import math as _math
+                _block_size = getattr(self.cache_config, "block_size", 16) or 16
                 num_blocks = sum(
-                    len(block_tables[seq.seq_id].physical_block_ids)
+                    _math.ceil(seq.get_len() / _block_size)
                     for seq in seq_group.get_seqs()
-                    if seq.seq_id in block_tables
                 )
                 pinned = self.pin_manager.pin(
                     seq_group.program_id,
