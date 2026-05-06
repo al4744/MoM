@@ -1501,6 +1501,8 @@ class Scheduler:
                     _math.ceil(seq.get_len() / _block_size)
                     for seq in seq_group.get_seqs()
                 )
+                tau = self.pin_manager.predictor.predict_ttl(
+                    seq_group.tool_name or "")
                 pinned = self.pin_manager.pin(
                     seq_group.program_id,
                     seq_group,
@@ -1514,7 +1516,7 @@ class Scheduler:
                             seq_group.program_id,
                             tool_name=seq_group.tool_name,
                             num_blocks=num_blocks,
-                            ttl_assigned=None,
+                            ttl_assigned=tau,
                             current_pinned_count=self.pin_manager.num_pinned_entries(),
                             current_pinned_blocks=self.pin_manager.num_pinned_blocks(),
                         )
