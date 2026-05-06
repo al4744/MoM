@@ -99,6 +99,18 @@ class TestRunTrace:
         assert out.metadata["model"] == "mock-model"
         assert "tool_latency_dist" in out.metadata
 
+    def test_workstream_c_metadata_populated_when_compile_enabled(self) -> None:
+        engine = MockEngine()
+        spec = fixture_trace(num_turns=2, tool_every=999, model="mock-model")
+        out = run_trace(
+            engine,
+            spec,
+            cfg={"name": "test", "compile": {"enabled": True}},
+        )
+        assert out.metadata["compile_enabled"] is True
+        assert out.metadata["compile_targets"] == ["prefill", "decode"]
+        assert "compile_phase_limitation" in out.metadata
+
 
 # ---------------------------------------------------------------------------
 # run_real — multi-trace dispatch with injected engine
@@ -136,6 +148,20 @@ class TestRunRealWithMockEngine:
         out = run_real(cfg, engine=MockEngine(), specs=[spec])
         assert len(out) == 1
         assert out[0].trace_id == spec.trace_id
+
+    def test_compile_warmup_is_discarded_from_results(self) -> None:
+        cfg = {
+            "name": "smoke",
+            "model": {"name": "mock-model"},
+            "compile": {"enabled": True, "warmup_iters": 2},
+            "traces": [{"id": "measured", "turns": 2}],
+        }
+        engine = MockEngine()
+        out = run_real(cfg, engine=engine)
+        assert len(out) == 1
+        assert out[0].trace_id == "measured"
+        assert out[0].metadata["compile_warmup_iters_completed"] == 2
+        assert engine.call_count > len(out[0].turns)
 
 
 # ---------------------------------------------------------------------------

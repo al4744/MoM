@@ -79,8 +79,8 @@ results/<config_name>/
 | Workstream A (retention) | `src/retention/events.py` log_event() | ✅ landed (`46299ed`) |
 | Workstream A (retention) | `PinManager` integration in scheduler | ✅ landed (`cfac2ba`) |
 | Workstream B (quantization) | `src/quantization/` quant config + selective retention | ⏳ pending |
-| Workstream C (compile + profiling) | `benchmarks/trace_generator.py` | ⏳ pending |
-| Workstream C (compile + profiling) | PyTorch Profiler / Nsight glue | ⏳ pending |
+| Workstream C (compile + profiling) | `benchmarks/trace_generator.py` | ✅ landed |
+| Workstream C (compile + profiling) | PyTorch Profiler / Nsight glue | ✅ opt-in via config/CLI |
 
 ## Notes
 
@@ -90,3 +90,7 @@ results/<config_name>/
   GPU sharing. Use `torch.cuda.reset_peak_memory_stats()` between traces.
 - Preemption count is read from `engine.scheduler.metrics` if available; falls
   back to counting `pin_rejected_budget` events from `src/retention/events.py`.
+- vLLM v0.6.4 does not expose stable public prefill/decode compile callables.
+  Workstream C uses vLLM's model-execution compile hook and phase-tagged
+  profiler ranges, while TTFT/post-tool-prefill/TBT remain the separate
+  phase-level metrics.

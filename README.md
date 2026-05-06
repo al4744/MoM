@@ -193,7 +193,7 @@ Three execution modes:
 ### Sanity checks (no GPU needed)
 
 ```bash
-# Unit tests — should print "8X passed in <2s"
+# Unit tests - should pass without requiring CUDA
 make test
 
 # Smoke run — exercises the real run_eval pipeline through MockEngine
@@ -286,7 +286,7 @@ results/<run_name>/
 | KV retention (Workstream A) | `engine.retention.*` | ✅ wired through `LLM(retention_config=...)` |
 | KV quantization (Workstream B) | `engine.quantization.kv_cache` | ✅ INT8/INT4 integrated end-to-end |
 | Prefix caching | `engine.prefix_caching.enabled` | ✅ forwarded to vLLM (required when retention enabled) |
-| torch.compile (Workstream C) | `engine.torch_compile.enabled` | ⏳ slot defined, env-var driver TODO |
+| torch.compile (Workstream C) | `compile.*` or legacy `engine.torch_compile.enabled` | ✅ opt-in vLLM compile hook + phase-tagged profiling |
 | ~~LMCache~~ | — | ❌ descoped — pin-or-evict over PC supersedes LMCache-style tiering |
 
 ## Ablation methodology
@@ -366,10 +366,86 @@ Accuracy results land in `<output>/accuracy.json` and `summary.json` is
 updated in place with `mean_task_accuracy`, picked up by the comparison
 and ablation tables automatically.
 
+## Workstream C: compile + profiling
+
+Workstream C is opt-in. Baseline, retention, quantization, and accuracy metric
+definitions are unchanged unless one of these flags or config blocks is used.
+
+Config surface:
+
+```yaml
+compile:
+  enabled: false
+  targets: ["prefill", "decode"]
+  backend: "inductor"
+  mode: "default"
+  dynamic: false
+  fullgraph: false
+  warmup_iters: 1
+
+profile:
+  enabled: false
+  pytorch_profiler: false
+  nsight: false
+  record_shapes: true
+  profile_memory: true
+  with_stack: false
+  output_dir: results/profiles
+```
+
+Important limitation: vendored vLLM v0.6.4 exposes `torch.compile` at the model
+execution level through `VLLM_TORCH_COMPILE_LEVEL`, not as separate public
+prefill and decode callables. The runner therefore uses the safest available
+compile hook, records this limitation in each trace's metadata, and preserves
+separate phase evidence through existing TTFT / post-tool prefill / TBT metrics
+plus profiler ranges named `mom.vllm.prefill`, `mom.vllm.decode`, and
+`mom.vllm.mixed` inside the vLLM model runner.
+
+CPU/mock smoke:
+
+```bash
+make workstream-c-smoke
+```
+
+Generate synthetic traces across context lengths:
+
+```bash
+PYTHONPATH=. python3 benchmarks/trace_generator.py \
+  --turns 5 10 25 50 \
+  --context-lengths 1024 4096 8192 16384 \
+  --output traces/workstream_c
+```
+
+GPU/vLLM compile sweep:
+
+```bash
+PYTHONPATH=. python3 benchmarks/run_compile_benchmarks.py \
+  --config configs/baseline.yaml \
+  --output-root results/workstream_c_compile \
+  --context-lengths 1024 4096 8192 16384
+```
+
+PyTorch Profiler and Nsight instrumentation:
+
+```bash
+PYTHONPATH=. python3 evaluation/run_eval.py \
+  --config configs/compile_profile.yaml \
+  --output results/compile_profile \
+  --profile \
+  --pytorch-profiler \
+  --nsight \
+  --profile-output-dir results/profiles/compile_profile
+```
+
+When `--nsight` is enabled, the runner writes
+`results/compile_profile/nsight_command.sh` with the exact `nsys profile ...`
+command to execute on the GPU VM. It does not relaunch itself under Nsight or
+claim profiler conclusions automatically.
+
 ## Quick Start (full project)
 
 ```bash
-# Generate synthetic traces (Workstream C — not yet implemented)
+# Generate synthetic traces (Workstream C)
 python3 benchmarks/trace_generator.py --turns 50 --output traces/
 
 # Run baseline benchmark (uses evaluation/run_eval.py — see above)

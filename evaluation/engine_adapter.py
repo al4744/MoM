@@ -25,6 +25,13 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence
 
+from src.compile.config import load_workstream_c_config
+from src.compile.runtime import (
+    configure_compile_environment,
+    configure_profile_environment,
+    configure_torch_compile_backend,
+)
+
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from vllm import SamplingParams  # noqa: F401
 
@@ -224,10 +231,13 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
     ``RetentionConfig`` from the YAML and forwards it; PinManager is then
     instantiated inside ``LLMEngine.__init__``.
 
-    Quantization (Workstream B) and torch.compile (Workstream C) knobs are
-    documented but presently no-op until those workstreams land their engine
-    surface.
+    Quantization (Workstream B) and torch.compile/profiling (Workstream C) are
+    opt-in and forwarded through their project extension surfaces when enabled.
     """
+    workstream_c = load_workstream_c_config(cfg)
+    configure_compile_environment(workstream_c.compile)
+    configure_profile_environment(workstream_c.profile)
+
     try:
         from vllm import LLM
     except ImportError as e:
@@ -239,6 +249,7 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
 
     model_cfg = cfg.get("model", {})
     engine_cfg = cfg.get("engine", {})
+    configure_torch_compile_backend(workstream_c.compile)
 
     llm_kwargs: dict[str, Any] = {
         "model": model_cfg.get("name"),
@@ -258,11 +269,10 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
     except ImportError:
         pass
 
-    # torch.compile (Workstream C) — engine flag, currently env-driven in vLLM.
-    if engine_cfg.get("torch_compile", {}).get("enabled"):
-        # vLLM v0.6.4 exposes torch.compile via VLLM_USE_TORCH_COMPILE env var.
-        # Setting the env var is Workstream C's responsibility.
-        pass
+    # torch.compile (Workstream C) - vLLM v0.6.4 exposes this through
+    # VLLM_TORCH_COMPILE_LEVEL and the plugin backend registry. This compiles
+    # model execution globally; phase separation is preserved in profiler
+    # ranges/metrics rather than fake per-phase callable compilation.
 
     # Prefix caching — required when retention is active; explicit for baseline
     # so the two configs produce a meaningful diff.

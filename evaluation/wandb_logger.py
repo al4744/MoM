@@ -211,6 +211,8 @@ def _per_trace_columns(traces: list[TraceResult]) -> list[str]:
             "throughput" in key
             or "gpu_util" in key
             or "gpu_utilization" in key
+            or key.startswith("compile_")
+            or key.startswith("profile_")
         )
     )
     return columns + [key for key in optional if key not in columns]
@@ -243,6 +245,8 @@ def _per_trace_rows(traces: list[TraceResult]) -> list[list[Any]]:
                     "throughput" in key
                     or "gpu_util" in key
                     or "gpu_utilization" in key
+                    or key.startswith("compile_")
+                    or key.startswith("profile_")
                 )
             }
         )

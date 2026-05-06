@@ -17,7 +17,7 @@ RESULTS ?= results_dry
 REAL_RESULTS ?= results_quant
 CONFIGS := $(wildcard configs/*.yaml)
 
-.PHONY: test test-quick eval-baseline eval-retention eval-all eval-all-real smoke smoke-baseline smoke-retention compare compare-real ablate ablate-real clean
+.PHONY: test test-quick eval-baseline eval-retention eval-all eval-all-real smoke smoke-baseline smoke-retention workstream-c-smoke compare compare-real ablate ablate-real clean
 
 # ----------------------------------------------------------------------------
 # Tests
@@ -63,6 +63,9 @@ smoke: smoke-baseline smoke-retention
 	PYTHONPATH=. $(PYTHON) evaluation/comparison_table.py \
 		--ablate $(RESULTS)/baseline-smoke/summary.json $(RESULTS)/retention-smoke/summary.json \
 		--output $(RESULTS)/smoke-ablate.md
+
+workstream-c-smoke:
+	bash scripts/run_workstream_c_smoke.sh
 
 # Iterate every YAML config under configs/ and dry-run it.
 eval-all:
