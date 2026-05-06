@@ -128,6 +128,30 @@ ablate-real:
 	@cat $(REAL_RESULTS)/ablate-$(A)-vs-$(B).md
 
 # ----------------------------------------------------------------------------
+# Concurrent multi-agent benchmark
+# ----------------------------------------------------------------------------
+# Usage:
+#   make eval-concurrent CONFIG=configs/retention_constrained.yaml CONCURRENCY=4
+#
+# Drives N concurrent traces through one engine. Each YAML trace shape is
+# replicated `--num-traces` times (defaults to CONCURRENCY). Output shape is
+# identical to run_eval; comparison_table.py works unchanged.
+
+CONFIG ?= configs/retention_constrained.yaml
+CONCURRENCY ?= 2
+CONCURRENT_RESULTS ?= results/concurrent
+
+eval-concurrent:
+	@cfgname=$$(basename $(CONFIG) .yaml); \
+	out=$(CONCURRENT_RESULTS)/$$cfgname-c$(CONCURRENCY); \
+	echo "=== Concurrent run: $$cfgname @ concurrency=$(CONCURRENCY) ==="; \
+	echo "  output: $$out"; \
+	PYTHONPATH=. $(PYTHON) scripts/run_concurrent_eval.py \
+		--config $(CONFIG) \
+		--output $$out \
+		--concurrency $(CONCURRENCY)
+
+# ----------------------------------------------------------------------------
 # Housekeeping
 # ----------------------------------------------------------------------------
 
