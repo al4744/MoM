@@ -32,6 +32,18 @@ EXPECTED: dict[str, dict] = {
     "retention_int8":       {"retention": True,  "prefix_caching": True,  "kv_quant": "int8"},
     "retention_int4":       {"retention": True,  "prefix_caching": True,  "kv_quant": "int4"},
     "compile_profile":      {"retention": False, "prefix_caching": False, "kv_quant": None},
+    # Memory-pressure variants (gpu_memory_utilization=0.77, tool_latency_ms=2000)
+    "baseline_constrained":              {"retention": False, "prefix_caching": False, "kv_quant": None},
+    "prefix_cache_only_constrained":     {"retention": False, "prefix_caching": True,  "kv_quant": None},
+    "retention_constrained":             {"retention": True,  "prefix_caching": True,  "kv_quant": None,
+                                          "use_ema": True, "use_per_tool_ema": True, "pin_min": 0.10},
+    "retention_pressure_constrained":    {"retention": True,  "prefix_caching": True,  "kv_quant": None,
+                                          "use_ema": True, "use_per_tool_ema": True, "pin_min": 0.40},
+    # Heavy-context variants (8192-token prompts, varied tool gaps, enforce_eager + max_num_seqs=8)
+    "baseline_heavy":                    {"retention": False, "prefix_caching": False, "kv_quant": None},
+    "prefix_cache_only_heavy":           {"retention": False, "prefix_caching": True,  "kv_quant": None},
+    "retention_heavy":                   {"retention": True,  "prefix_caching": True,  "kv_quant": None,
+                                          "use_ema": True, "use_per_tool_ema": True, "pin_min": 0.10},
 }
 
 

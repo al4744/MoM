@@ -259,6 +259,18 @@ def build_real_engine(cfg: dict[str, Any]) -> EngineProtocol:
         llm_kwargs["max_model_len"] = model_cfg["max_model_len"]
     if "gpu_memory_utilization" in model_cfg:
         llm_kwargs["gpu_memory_utilization"] = model_cfg["gpu_memory_utilization"]
+    # Workstream D heavy-load knobs:
+    #   enforce_eager=True  — skip cudagraph capture (saves ~0.3 GB on L4 and
+    #                         cuts the per-batch activation pre-allocation).
+    #                         Slower at low concurrency, fits at high.
+    #   max_num_seqs=N      — cap the per-step in-flight batch. Without this,
+    #                         vLLM pre-allocates activation buffers for its
+    #                         default (~256 seqs) at engine init, OOMing on
+    #                         memory-constrained nodes like L4.
+    if model_cfg.get("enforce_eager"):
+        llm_kwargs["enforce_eager"] = True
+    if "max_num_seqs" in model_cfg:
+        llm_kwargs["max_num_seqs"] = int(model_cfg["max_num_seqs"])
 
     # Quantization (Workstream B) — build KVQuantConfig and forward to LLMEngine.
     try:

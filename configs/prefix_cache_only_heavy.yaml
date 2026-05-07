@@ -1,0 +1,48 @@
+# Workstream D — Heavy-context regime: PC alone (no retention).
+#
+# vLLM's built-in prefix cache active, retention disabled. Tests how PC
+# behaves under genuine cross-agent KV pressure (heavy contexts, varied
+# tool gaps, eviction-bound regime).
+#
+# The (prefix_cache_only_heavy → retention_heavy) delta is the
+# contribution of pin-or-evict specifically when the cache can no longer
+# keep all conversations alive naturally.
+
+name: prefix_cache_only_heavy
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.85
+  enforce_eager: true
+  max_num_seqs: 8
+
+engine:
+  retention:
+    enabled: false
+  prefix_caching:
+    enabled: true                     # ← PC on, retention off
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: 20turn-large-fast
+    turns: 20
+    tool_latency_dist: fast
+    prompt_tokens: 8192
+    tool_latency_ms: 500
+  - id: 20turn-large-medium
+    turns: 20
+    tool_latency_dist: medium
+    prompt_tokens: 8192
+    tool_latency_ms: 2000
+  - id: 20turn-large-long
+    turns: 20
+    tool_latency_dist: long
+    prompt_tokens: 8192
+    tool_latency_ms: 5000

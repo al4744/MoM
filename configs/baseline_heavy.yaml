@@ -1,0 +1,58 @@
+# Workstream D — Heavy-context regime: vanilla vLLM reference (no PC, no retention).
+#
+# Pushes per-trace KV demand far above the cache budget so eviction becomes
+# the bottleneck (rather than engine queueing). Reference for the
+# prefix_cache_only_heavy and retention_heavy configs.
+#
+# Per-trace KV math at this scale:
+#   prompt_tokens=8192, num_turns=20 → ~10k token conversation per trace
+#   ~625 KV blocks per agent at 16 tokens/block
+#   At c=4 in concurrent_runner: 4 × 625 = 2500 blocks demanded
+#   gmu=0.85 budget: ~1737 blocks → forced eviction across agents
+#
+# This is the regime retention was designed for: when vLLM's prefix cache
+# alone cannot keep pinned candidates alive across tool gaps under
+# cross-agent eviction pressure.
+
+name: baseline_heavy
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.85
+  # enforce_eager skips cudagraph capture so we don't OOM at higher batch.
+  enforce_eager: true
+  # Cap per-step batch to avoid 256-seq activation pre-allocation.
+  max_num_seqs: 8
+
+engine:
+  retention:
+    enabled: false
+  prefix_caching:
+    enabled: false
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+# Mixed tool-latency distribution — gives retention's TTL learning
+# something non-trivial to predict (vs. uniform 2-sec gaps).
+traces:
+  - id: 20turn-large-fast
+    turns: 20
+    tool_latency_dist: fast
+    prompt_tokens: 8192
+    tool_latency_ms: 500
+  - id: 20turn-large-medium
+    turns: 20
+    tool_latency_dist: medium
+    prompt_tokens: 8192
+    tool_latency_ms: 2000
+  - id: 20turn-large-long
+    turns: 20
+    tool_latency_dist: long
+    prompt_tokens: 8192
+    tool_latency_ms: 5000
