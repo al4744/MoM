@@ -21,6 +21,13 @@ env/
 *.swo
 *~
 
+# Claude Code / AI assistant local state — never commit
+.claude/
+.claude.json
+CLAUDE.md.bak
+.aider*
+.cursor/
+
 # OS
 .DS_Store
 Thumbs.db

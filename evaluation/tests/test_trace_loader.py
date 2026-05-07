@@ -86,3 +86,74 @@ class TestTraceTurn:
     def test_is_tool_return(self) -> None:
         t = TraceTurn(turn_index=0, kind="tool_return", tokens=32)
         assert t.is_tool_return is True
+
+
+class TestRoleField:
+    """role= field on TraceSpec — controls focal/filler scheduling in
+    concurrent_runner."""
+
+    def test_default_role_is_focal(self) -> None:
+        spec = fixture_trace()
+        assert spec.role == "focal"
+
+    def test_role_filler_propagates(self) -> None:
+        spec = fixture_trace(role="filler")
+        assert spec.role == "filler"
+
+    def test_tracespec_default_role_focal(self) -> None:
+        # Direct construction without role kwarg (e.g. legacy callers).
+        spec = TraceSpec(
+            trace_id="t",
+            model="m",
+            prompt_tokens=128,
+            tool_latency_dist="zero",
+        )
+        assert spec.role == "focal"
+
+
+class TestFillerFocalWorkload:
+    """trace_loader.filler_focal_workload — Daksh's microbenchmark builder."""
+
+    def test_one_focal_n_fillers(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(num_fillers=3, focal_num_user_prompts=2)
+        assert len(specs) == 4
+        assert specs[0].role == "focal"
+        assert all(s.role == "filler" for s in specs[1:])
+
+    def test_focal_user_prompts_match_argument(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        for n in (1, 4, 10):
+            specs = filler_focal_workload(num_fillers=0, focal_num_user_prompts=n)
+            user_prompts = [t for t in specs[0].turns if t.kind == "user_prompt"]
+            assert len(user_prompts) == n
+
+    def test_filler_turns_are_all_user_prompts(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(num_fillers=2, filler_num_turns=10)
+        for filler in specs[1:]:
+            assert all(t.kind == "user_prompt" for t in filler.turns)
+            assert len(filler.turns) == 10
+
+    def test_focal_tool_latency_in_each_gap(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(
+            num_fillers=0,
+            focal_num_user_prompts=3,
+            focal_tool_latency_ms=4321.0,
+        )
+        tool_calls = [t for t in specs[0].turns if t.kind == "tool_call"]
+        assert all(tc.tool_latency_ms == 4321.0 for tc in tool_calls)
+
+    def test_body_tokens_match(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(
+            num_fillers=2,
+            focal_num_user_prompts=2,
+            focal_body_tokens_per_turn=999,
+            filler_body_tokens_per_turn=111,
+        )
+        focal_user_prompts = [t for t in specs[0].turns if t.kind == "user_prompt"]
+        filler_user_prompts = [t for t in specs[1].turns if t.kind == "user_prompt"]
+        assert all(t.tokens == 999 for t in focal_user_prompts)
+        assert all(t.tokens == 111 for t in filler_user_prompts)

@@ -1,0 +1,63 @@
+# Workstream D — Filler+focal regime: Daksh's microbenchmark in our framework.
+#
+# This is the ONE regime where retention demonstrably outperforms PC: a
+# single focal trace pauses for several seconds for a tool gap, while N
+# filler agents continuously hammer the engine and evict any block that
+# isn't pinned. When the focal trace resumes, retention's pinned blocks
+# survive (low TTFT); under PC alone they have been evicted (high TTFT).
+#
+# Daksh observed:
+#   PC-only, TTL=N/A : focal post-tool TTFT ≈ 843 ms
+#   retention TTL=20s : focal post-tool TTFT ≈ 107 ms     (7.9× speedup)
+#
+# The (prefix_cache_only_filler → retention_filler) delta is the
+# headline pin-or-evict number this project was designed to produce.
+#
+# Run:
+#   PYTHONPATH=. python scripts/run_concurrent_eval.py \
+#       --config configs/retention_filler.yaml \
+#       --output results/filler-$TS/retention/ \
+#       --num-fillers 7 --focal-num-turns 4 --focal-tool-latency-ms 5000 \
+#       --concurrency 8
+
+name: retention_filler
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.85
+  enforce_eager: true       # skip cudagraph capture (avoids OOM at higher concurrency)
+  max_num_seqs: 8           # cap activation pre-allocation
+
+engine:
+  retention:
+    enabled: true
+    ttl:
+      alpha: 0.3
+      # Default TTL = 20 seconds, matching Daksh's microbenchmark. The 5-second
+      # focal tool gap is fully covered by this TTL window.
+      default_ttl: 20.0
+      safety_factor: 1.5
+      use_per_tool_ema: true
+      use_ema: true
+    pin_manager:
+      max_pinned_fraction: 0.30
+  prefix_caching:
+    enabled: true
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+# `traces` is IGNORED in filler+focal mode — focal/filler shapes come from
+# CLI flags. Kept here for legacy compatibility (e.g. accidental run without
+# --num-fillers will still produce something rather than crashing).
+traces:
+  - id: legacy-fallback
+    turns: 4
+    tool_latency_dist: long
+    prompt_tokens: 8192
+    tool_latency_ms: 5000

@@ -366,3 +366,247 @@ class TestPromptUniqueness:
         # And both should reference their respective program_ids.
         assert any("agent_0" in p for p in turn0)
         assert any("agent_1" in p for p in turn0)
+
+
+# ---------------------------------------------------------------------------
+# Filler+focal mode regressions
+#
+# These tests cover the Daksh-microbenchmark code path:
+#
+#   - role="focal" / role="filler" propagates from TraceSpec through
+#     _TraceState into TraceResult.metadata.
+#   - The runner exits as soon as all focal traces complete (drain phase),
+#     even if filler traces have many turns left.
+#   - Per-trace TraceResult records role="focal" / "filler" so downstream
+#     analysis can stratify focal-TTFT vs filler-TTFT.
+#   - Filler traces submit user_prompt requests continuously (no tool gap
+#     idle time), creating eviction pressure during focal's tool gap.
+# ---------------------------------------------------------------------------
+
+class TestFillerFocalMode:
+    def test_role_propagates_to_metadata(self) -> None:
+        """role="focal" / "filler" must end up in TraceResult.metadata.role
+        so analysis tools can split focal-TTFT from filler-TTFT."""
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(
+            num_fillers=2,
+            focal_num_user_prompts=2,
+            focal_tool_latency_ms=10.0,  # 10 ms — kept tiny for unit test
+            filler_num_turns=5,
+            focal_body_tokens_per_turn=64,
+            filler_body_tokens_per_turn=64,
+        )
+        # 1 focal + 2 fillers = 3 specs.
+        assert len(specs) == 3
+        assert specs[0].role == "focal"
+        assert all(s.role == "filler" for s in specs[1:])
+
+        out = run_concurrent(MockEngine(), specs, cfg={"name": "ff"}, concurrency=3)
+
+        roles = [tr.metadata.get("role") for tr in out]
+        assert sorted(roles) == ["filler", "filler", "focal"]
+
+        focal_results = [tr for tr in out if tr.metadata.get("role") == "focal"]
+        filler_results = [tr for tr in out if tr.metadata.get("role") == "filler"]
+        assert len(focal_results) == 1
+        assert len(filler_results) == 2
+
+    def test_focal_completion_terminates_run_early(self) -> None:
+        """Once focal traces are done, fillers must NOT keep running their
+        full turn count — the runner should drain in-flight and exit. With
+        focal_num_user_prompts=1 and filler_num_turns=200, the focal trace
+        takes ~1 turn worth of work; if termination logic is broken, the run
+        would process 2 × 200 = 400 filler turns instead."""
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(
+            num_fillers=2,
+            focal_num_user_prompts=1,
+            focal_tool_latency_ms=0.0,
+            filler_num_turns=200,
+            focal_body_tokens_per_turn=64,
+            filler_body_tokens_per_turn=64,
+        )
+        out = run_concurrent(MockEngine(), specs, cfg={"name": "ff"}, concurrency=3)
+
+        focal = next(tr for tr in out if tr.metadata.get("role") == "focal")
+        fillers = [tr for tr in out if tr.metadata.get("role") == "filler"]
+
+        # Focal completed all its user_prompts (just 1).
+        assert len(focal.turns) == 1
+
+        # Each filler ran SOME turns (not zero, not all 200). Mock engine is
+        # synchronous so fillers and focal interleave on the for-loop pass.
+        # In practice we expect the fillers to have run roughly 1–10 turns
+        # before the focal completed and triggered drain.
+        for f in fillers:
+            assert 0 < len(f.turns) < 200, (
+                f"Filler {f.trace_id} ran {len(f.turns)} turns — "
+                "expected drain to terminate well before all 200 turns."
+            )
+
+    def test_focal_only_workload_unchanged_behaviour(self) -> None:
+        """Pure-focal workloads (no fillers) must behave exactly like the
+        pre-filler-aware runner: all states must finish, all turn counts
+        must hit their full spec."""
+        # All-focal: equivalent to legacy "replicated traces".
+        specs = [
+            fixture_trace(trace_id=f"f{i}", num_turns=3, tool_every=999, role="focal")
+            for i in range(2)
+        ]
+        out = run_concurrent(MockEngine(), specs, cfg={"name": "all-focal"}, concurrency=2)
+        assert len(out) == 2
+        for tr in out:
+            assert len(tr.turns) == 3
+            assert tr.metadata["role"] == "focal"
+
+    def test_no_role_specified_defaults_to_focal(self) -> None:
+        """Existing callers that don't pass role= must keep working — the
+        default is "focal" so the legacy "loop until all done" path still
+        applies."""
+        # No role keyword — relies on TraceSpec default.
+        specs = [fixture_trace(trace_id=f"t{i}", num_turns=2, tool_every=999) for i in range(2)]
+        for s in specs:
+            assert s.role == "focal"
+        out = run_concurrent(MockEngine(), specs, cfg={"name": "default"}, concurrency=2)
+        assert all(tr.metadata["role"] == "focal" for tr in out)
+
+    def test_filler_user_prompts_have_no_tool_gaps(self) -> None:
+        """Filler traces must consist purely of user_prompt turns with no
+        tool_call/tool_return — they're meant to submit continuously to
+        create cache pressure, not to spend time idle in tool gaps."""
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(
+            num_fillers=1,
+            focal_num_user_prompts=2,
+            focal_tool_latency_ms=10.0,
+            filler_num_turns=5,
+            focal_body_tokens_per_turn=64,
+            filler_body_tokens_per_turn=64,
+        )
+        focal_spec = specs[0]
+        filler_spec = specs[1]
+
+        assert all(t.kind == "user_prompt" for t in filler_spec.turns), (
+            "Filler trace contains non-user_prompt turns — defeats the purpose "
+            "of continuous-submission pressure."
+        )
+        # Focal should have at least one tool gap (between two user_prompts).
+        focal_tool_calls = [t for t in focal_spec.turns if t.kind == "tool_call"]
+        assert len(focal_tool_calls) == 1  # 2 user_prompts → 1 gap between
+
+    def test_focal_tool_latency_passes_through(self) -> None:
+        """Focal trace's tool_latency_ms in the spec should match what the
+        builder was given — it's the parameter retention's TTL must cover."""
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(
+            num_fillers=0,
+            focal_num_user_prompts=2,
+            focal_tool_latency_ms=12345.0,
+        )
+        focal = specs[0]
+        tool_calls = [t for t in focal.turns if t.kind == "tool_call"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_latency_ms == 12345.0
+
+
+class TestStartOffsetSemantics:
+    """Regression: TraceSpec.start_offset_ms must defer the first request.
+
+    Used by the staggered / burst workload classes to model arrivals over
+    time. Without this, all agents would start at t=0 regardless of their
+    nominal arrival schedule, collapsing back to lockstep.
+    """
+
+    def test_zero_offset_starts_immediately(self) -> None:
+        spec = fixture_trace(num_turns=2, tool_every=999)  # default offset=0
+        assert spec.start_offset_ms == 0.0
+        out = run_concurrent(MockEngine(), [spec], cfg={"name": "imm"}, concurrency=1)
+        assert len(out[0].turns) == 2
+
+    def test_nonzero_offset_delays_first_metric(self) -> None:
+        """A 100ms start_offset_ms should mean wallclock_ms includes that
+        delay (mock engine timestamps via time.monotonic so the offset is
+        observable in the metrics)."""
+        spec = TraceSpec(
+            trace_id="delayed",
+            model="mock",
+            prompt_tokens=64,
+            tool_latency_dist="zero",
+            turns=[TraceTurn(turn_index=0, kind="user_prompt", tokens=32)],
+            start_offset_ms=100.0,
+        )
+        # Reference: a non-delayed spec for comparison.
+        ref = TraceSpec(
+            trace_id="immediate",
+            model="mock",
+            prompt_tokens=64,
+            tool_latency_dist="zero",
+            turns=[TraceTurn(turn_index=0, kind="user_prompt", tokens=32)],
+        )
+        # MockEngine TTFT is deterministic; our metric is "did the runner
+        # actually wait?". Use time.monotonic before/after.
+        t0 = time.monotonic()
+        run_concurrent(MockEngine(), [spec, ref], cfg={"name": "delay"}, concurrency=2)
+        elapsed = time.monotonic() - t0
+        # 100 ms offset enforced; allow generous slack for CI variance.
+        assert elapsed >= 0.080, (
+            f"Run finished in {elapsed*1000:.1f}ms — offset of 100ms not honoured."
+        )
+
+    def test_offsets_do_not_break_focal_termination(self) -> None:
+        """Combine start_offset with a non-filler workload — runner should
+        still wait for every state to finish (no premature exit)."""
+        specs = [
+            TraceSpec(
+                trace_id=f"agent-{i}",
+                model="mock",
+                prompt_tokens=64,
+                tool_latency_dist="zero",
+                turns=[TraceTurn(turn_index=0, kind="user_prompt", tokens=32),
+                       TraceTurn(turn_index=1, kind="user_prompt", tokens=32)],
+                start_offset_ms=10.0 * i,
+            )
+            for i in range(3)
+        ]
+        out = run_concurrent(MockEngine(), specs, cfg={"name": "off"}, concurrency=3)
+        assert len(out) == 3
+        # Each agent fully completed despite different offsets.
+        assert all(len(tr.turns) == 2 for tr in out)
+
+
+class TestFillerFocalBuilder:
+    """Direct unit tests for trace_loader.filler_focal_workload."""
+
+    def test_zero_fillers_gives_only_focal(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(num_fillers=0, focal_num_user_prompts=3)
+        assert len(specs) == 1
+        assert specs[0].role == "focal"
+
+    def test_negative_fillers_raises(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        with pytest.raises(ValueError, match="num_fillers"):
+            filler_focal_workload(num_fillers=-1)
+
+    def test_zero_focal_user_prompts_raises(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        with pytest.raises(ValueError, match="focal_num_user_prompts"):
+            filler_focal_workload(num_fillers=2, focal_num_user_prompts=0)
+
+    def test_focal_has_n_user_prompts_and_nminus1_tool_gaps(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(num_fillers=0, focal_num_user_prompts=4)
+        focal = specs[0]
+        n_user = sum(1 for t in focal.turns if t.kind == "user_prompt")
+        n_tc = sum(1 for t in focal.turns if t.kind == "tool_call")
+        n_tr = sum(1 for t in focal.turns if t.kind == "tool_return")
+        assert n_user == 4
+        assert n_tc == 3
+        assert n_tr == 3
+
+    def test_filler_ids_are_unique(self) -> None:
+        from evaluation.trace_loader import filler_focal_workload
+        specs = filler_focal_workload(num_fillers=5, focal_num_user_prompts=2)
+        filler_ids = [s.trace_id for s in specs if s.role == "filler"]
+        assert len(set(filler_ids)) == len(filler_ids)
+        assert filler_ids == ["filler-0", "filler-1", "filler-2", "filler-3", "filler-4"]

@@ -1,9 +1,14 @@
 """Workstream D — Accuracy benchmark via lm-evaluation-harness (Option B).
 
-Runs an lm-eval task suite (default: MMLU) against a config-specified vLLM
-engine.  Reuses the same retention / quantization / prefix-caching wiring
-as ``evaluation/run_eval.py`` so the accuracy numbers match the latency
+Runs an lm-eval task suite against a config-specified vLLM engine. Reuses the
+same retention / quantization / prefix-caching wiring as
+``evaluation/run_eval.py`` so the accuracy numbers match the latency
 numbers cell-for-cell in the eval matrix.
+
+The point of this script is to answer ONE question: did our optimizations
+(retention, INT8 KV, INT4 KV, prefix-caching) break the model's ability to
+reason and follow instructions? If retention_int4 hits 90% MMLU vs
+baseline's 92%, we've quantified the accuracy cost of memory savings.
 
 Outputs:
   - ``<output>/accuracy.json``     — full lm-eval results dump (per-task)
@@ -11,11 +16,53 @@ Outputs:
                                      (only if the file already exists)
 
 Usage:
+    # Single task (existing):
     PYTHONPATH=. python scripts/run_accuracy_eval.py \\
         --config configs/baseline.yaml \\
         --output results/d-run-20260506-1900/baseline/ \\
-        --tasks mmlu \\
-        --limit 50
+        --tasks mmlu --limit 50
+
+    # Task suite shortcut:
+    PYTHONPATH=. python scripts/run_accuracy_eval.py \\
+        --config configs/retention.yaml \\
+        --output results/.../retention/ \\
+        --task-suite reasoning --limit 100
+
+    # Full agentic suite (proxies for AgentBench / ToolBench reasoning):
+    PYTHONPATH=. python scripts/run_accuracy_eval.py \\
+        --config configs/retention_int8.yaml \\
+        --output results/.../retention_int8/ \\
+        --task-suite agentic --limit 50
+
+Task suites (selected via --task-suite, mutually exclusive with --tasks):
+
+    mmlu          mmlu                     — knowledge breadth (the default).
+    reasoning     gsm8k,bbh                — math word problems + BIG-Bench
+                                             Hard. Multi-step reasoning IS
+                                             the substrate of tool-use, so a
+                                             retention/quant config that
+                                             fails reasoning will fail
+                                             agentic tasks too.
+    agentic       mmlu,gsm8k,bbh,arc_challenge
+                                           — combined reasoning + knowledge,
+                                             our practical proxy for full
+                                             AgentBench / ToolBench. Heavier
+                                             benchmarks like AgentBench require
+                                             external tool environments not
+                                             available in this script; pass
+                                             them via --tasks if you have
+                                             lm-eval task plugins for them
+                                             registered locally.
+
+A note on AgentBench / ToolBench specifically:
+  Both are multi-turn tool-execution benchmarks requiring a running tool
+  environment (DB shells, web sandboxes, etc.). lm-eval-harness does not
+  ship those harnesses by default — they need separate setup. Once you have
+  an lm-eval-compatible task plugin for AgentBench or ToolBench installed,
+  pass its task name via ``--tasks`` and this script forwards it through
+  unchanged. As a practical proxy without that infrastructure, the
+  ``agentic`` task suite covers the underlying reasoning capabilities the
+  agentic benchmarks exercise.
 
 Notes on integration with Workstream A's RetentionConfig:
     lm-eval's ``vllm`` backend builds its own ``LLM(...)`` instance and only
@@ -30,6 +77,8 @@ Time budget (Llama 3 8B on 1×L4):
     --limit 50  per-subtask  ≈   8 min/config  → 40 min for 5 configs
     --limit 200 per-subtask  ≈  30 min/config  →  2.5 h for 5 configs
     no limit    (full MMLU)  ≈  90 min/config  →  7.5 h for 5 configs
+    --task-suite reasoning --limit 50  ≈  20 min/config  → 1.5 h for 5 configs
+    --task-suite agentic   --limit 50  ≈  35 min/config  → 3 h for 5 configs
 """
 from __future__ import annotations
 
@@ -121,6 +170,13 @@ def _update_summary_json(summary_path: Path, mean_acc: float) -> None:
         json.dump(summary, f, indent=2)
 
 
+TASK_SUITES: dict[str, str] = {
+    "mmlu":       "mmlu",
+    "reasoning":  "gsm8k,bbh",
+    "agentic":    "mmlu,gsm8k,bbh,arc_challenge",
+}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument(
@@ -135,11 +191,22 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Output dir (typically the same dir as the matching summary.json).",
     )
-    p.add_argument(
+    grp = p.add_mutually_exclusive_group()
+    grp.add_argument(
         "--tasks",
-        default="mmlu",
+        default=None,
         help="Comma-separated lm-eval tasks. Examples: mmlu, hellaswag, "
-             "arc_easy, arc_challenge. Defaults to mmlu.",
+             "arc_easy, arc_challenge, gsm8k, bbh. If you have an "
+             "AgentBench/ToolBench lm-eval plugin installed, pass its task "
+             "name(s) here.",
+    )
+    grp.add_argument(
+        "--task-suite",
+        choices=tuple(TASK_SUITES.keys()),
+        default=None,
+        help="Predefined task collection. mmlu (knowledge), reasoning "
+             "(gsm8k+bbh), agentic (combined — proxy for AgentBench/ToolBench "
+             "reasoning subset).",
     )
     p.add_argument(
         "--limit",
@@ -154,7 +221,17 @@ def parse_args() -> argparse.Namespace:
         default=16,
         help="lm-eval batch size. Higher = faster, more VRAM.",
     )
-    return p.parse_args()
+    args = p.parse_args()
+    # Default to MMLU if neither flag is given (preserves prior behaviour).
+    if args.tasks is None and args.task_suite is None:
+        args.tasks = TASK_SUITES["mmlu"]
+        args._tasks_origin = "default-mmlu"
+    elif args.task_suite is not None:
+        args.tasks = TASK_SUITES[args.task_suite]
+        args._tasks_origin = f"suite:{args.task_suite}"
+    else:
+        args._tasks_origin = "explicit"
+    return args
 
 
 def main() -> int:
@@ -166,7 +243,7 @@ def main() -> int:
     _maybe_inject_retention_config(cfg)
 
     print(f"=== {args.config.stem} ===")
-    print(f"  tasks   : {args.tasks}")
+    print(f"  tasks   : {args.tasks}  ({getattr(args, '_tasks_origin', '?')})")
     print(f"  limit   : {args.limit}")
     print(f"  batch   : {args.batch_size}")
     print(f"  vllm    : {vllm_kwargs}")

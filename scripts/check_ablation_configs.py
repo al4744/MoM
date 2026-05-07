@@ -44,6 +44,11 @@ EXPECTED: dict[str, dict] = {
     "prefix_cache_only_heavy":           {"retention": False, "prefix_caching": True,  "kv_quant": None},
     "retention_heavy":                   {"retention": True,  "prefix_caching": True,  "kv_quant": None,
                                           "use_ema": True, "use_per_tool_ema": True, "pin_min": 0.10},
+    # Filler+focal variants (Daksh's microbenchmark; ttl=20s; --num-fillers driven from CLI)
+    "baseline_filler":                   {"retention": False, "prefix_caching": False, "kv_quant": None},
+    "prefix_cache_only_filler":          {"retention": False, "prefix_caching": True,  "kv_quant": None},
+    "retention_filler":                  {"retention": True,  "prefix_caching": True,  "kv_quant": None,
+                                          "use_ema": True, "use_per_tool_ema": True, "pin_min": 0.10},
 }
 
 

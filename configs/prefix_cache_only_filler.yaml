@@ -1,0 +1,49 @@
+# Workstream D — Filler+focal regime: PC alone (no retention).
+#
+# Pairs with retention_filler.yaml as the head-to-head comparison. Same
+# model + memory settings; the only delta is engine.retention.enabled=false.
+# Under continuous filler pressure, the focal trace's blocks WILL be evicted
+# during its 5-second tool gap (PC's LRU has no notion of "this block belongs
+# to a paused conversation"). On resume, the focal trace pays full prefill
+# recomputation cost.
+#
+# The (prefix_cache_only_filler → retention_filler) delta is the headline
+# number — anything else is interpretation. If they tie here, retention adds
+# no value; if retention is faster by 5–10×, it has demonstrable value in
+# tool-paused agentic workloads.
+#
+# Run:
+#   PYTHONPATH=. python scripts/run_concurrent_eval.py \
+#       --config configs/prefix_cache_only_filler.yaml \
+#       --output results/filler-$TS/pc/ \
+#       --num-fillers 7 --focal-num-turns 4 --focal-tool-latency-ms 5000 \
+#       --concurrency 8
+
+name: prefix_cache_only_filler
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.85
+  enforce_eager: true
+  max_num_seqs: 8
+
+engine:
+  retention:
+    enabled: false
+  prefix_caching:
+    enabled: true             # ← PC on, retention off
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: legacy-fallback
+    turns: 4
+    tool_latency_dist: long
+    prompt_tokens: 8192
+    tool_latency_ms: 5000

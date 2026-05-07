@@ -1,0 +1,39 @@
+# Workstream D — Filler+focal regime: vanilla vLLM (no PC, no retention).
+#
+# Reference for the pair (prefix_cache_only_filler, retention_filler). Each
+# focal post-tool turn pays full prefill cost — there is no caching at all.
+# Useful as the "no optimization" baseline that lets us present the result
+# as: baseline → +PC → +PC+retention.
+#
+# Don't expect retention to help vs THIS config; it requires PC to exist
+# (retention does not maintain its own block store, it pins entries already
+# in PC). The headline number remains the (PC → retention) delta.
+
+name: baseline_filler
+
+model:
+  name: meta-llama/Meta-Llama-3-8B
+  dtype: float16
+  max_model_len: 8192
+  gpu_memory_utilization: 0.85
+  enforce_eager: true
+  max_num_seqs: 8
+
+engine:
+  retention:
+    enabled: false
+  prefix_caching:
+    enabled: false
+  quantization:
+    kv_cache: null
+  torch_compile:
+    enabled: false
+  lmcache:
+    enabled: false
+
+traces:
+  - id: legacy-fallback
+    turns: 4
+    tool_latency_dist: long
+    prompt_tokens: 8192
+    tool_latency_ms: 5000

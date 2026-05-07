@@ -271,13 +271,66 @@ results/<run_name>/
 
 | Target | What it does |
 |--------|--------------|
-| `make test` | Run all unit tests under `evaluation/tests/` |
+| `make test` | Run all unit tests under `evaluation/tests/` (249 tests) |
 | `make smoke` | Real eval pipeline through `MockEngine` (CPU-only) |
 | `make eval-baseline` / `make eval-retention` | Dry-run sentinel runs |
 | `make eval-all` | Dry-run every YAML under `configs/` |
 | `make compare` | Cross-config markdown table from `results/*/summary.json` |
 | `make ablate A=<base> B=<cand>` | Pairwise Δ + speedup table |
+| `make eval-filler-focal` | Tier 1: Daksh's filler+focal microbenchmark across (baseline, PC, retention) |
+| `make eval-tier2` | Tier 2: full 5-class workload battery (lockstep / staggered / heterogeneous / burst / filler+focal) × 3 engine configs |
+| `make eval-accuracy-all` | Accuracy battery: lm-eval-harness against all retention/quant configs + diff |
+| `make eval-comprehensive` | Tier 2 + accuracy in one shot |
 | `make clean` | Wipe `results/`, `__pycache__`, `.pytest_cache` |
+
+### Workload battery — what each class measures
+
+The 5 workload classes in `evaluation/workloads.py` each test a different
+cross-agent contention pattern. The headline number is always the
+`(prefix_cache_only_filler → retention_filler)` delta on **focal post-tool
+TTFT** (the metric that pin-or-evict was designed to improve).
+
+| Class | What it varies | Realistic regime |
+|-------|----------------|-------------------|
+| **lockstep** | nothing — N identical agents, all start t=0 | Negative control. PC and retention should tie. |
+| **filler_focal** | 1 measured focal vs N continuous fillers | Daksh's microbenchmark — the regime retention was designed for. ≥7× speedup expected. |
+| **staggered** | start_offset (Poisson arrivals) | Sustained-load realistic. New arrivals create eviction pressure on agents in tool gaps. |
+| **heterogeneous** | tool_latency_ms (log-normal) | Exercises retention's per-tool-EMA TTL predictor. |
+| **burst** | start_offset (uniform within tight window) | Transient burst. Cache fills sharply, eviction cascades. |
+
+Per-class metrics emitted in `summary.json` under `workload`:
+
+* `all_ttft.{mean,p50,p95,p99,max}_ms` — every-turn TTFT distribution
+* `post_tool_ttft.*` — TTFT on turns following a tool_return (the headline)
+* `focal_ttft.*` / `filler_ttft.*` — split by role when filler+focal is used
+* `focal_post_tool_ttft.*` — the cleanest pin-or-evict signal
+* `jain_fairness_all` / `jain_fairness_focal` — 1.0 = perfectly fair
+* `slo_pass_rate_*` — fraction of turns under `--slo-threshold-ms` (default 200)
+* `total_preemptions` — vLLM scheduler counter
+
+### Accuracy battery
+
+`scripts/run_accuracy_eval.py` wraps lm-evaluation-harness with the same
+retention/quant config wiring. Three task suites:
+
+| Suite | Tasks | Time per config (L4, --limit 50) |
+|-------|-------|----------------------------------|
+| `mmlu` | mmlu | ~8 min |
+| `reasoning` | gsm8k + bbh | ~20 min |
+| `agentic` | mmlu + gsm8k + bbh + arc_challenge — proxy for AgentBench/ToolBench | ~35 min |
+
+**On AgentBench / ToolBench specifically**: both are multi-turn tool-execution
+benchmarks requiring external tool environments (DB shells, web sandboxes,
+etc.) not bundled with lm-eval. Once you have an lm-eval-compatible task
+plugin for either, pass its task name via `--tasks <plugin_name>` and the
+accuracy harness forwards it through unchanged. As a practical proxy
+without that infrastructure, the `agentic` task suite covers the underlying
+reasoning capabilities those agentic benchmarks exercise.
+
+`scripts/compare_accuracy.py` reads N `accuracy.json` files and prints a
+markdown comparison table with a `Δ vs baseline` column. Any config losing
+>2 pp mean accuracy gets a ⚠ marker — the threshold above which "accuracy
+cost of memory savings" is too steep to ship.
 
 ### What's wired vs. stubbed
 

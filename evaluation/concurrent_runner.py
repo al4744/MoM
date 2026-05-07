@@ -65,6 +65,11 @@ class _TraceState:
     # Tool-gap bookkeeping (monotonic deadline when the gap ends).
     tool_gap_ends: Optional[float] = None
 
+    # Absolute monotonic deadline before which this trace must NOT submit its
+    # first request. Computed at runner init from spec.start_offset_ms; None
+    # means "start immediately" (and is the case for every legacy caller).
+    start_at: Optional[float] = None
+
     @property
     def has_more_turns(self) -> bool:
         return self.turn_idx < len(self.spec.turns)
@@ -77,6 +82,14 @@ class _TraceState:
             and self.pending_request_id is None
             and self.tool_gap_ends is None
         )
+
+    @property
+    def is_filler(self) -> bool:
+        return self.spec.role == "filler"
+
+    @property
+    def is_focal(self) -> bool:
+        return self.spec.role == "focal"
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +206,35 @@ def run_concurrent(
     config_name = cfg.get("name", "unknown")
     states = [_TraceState(spec=spec) for spec in specs]
 
+    # Resolve per-trace start times relative to NOW (run kickoff). A spec
+    # with start_offset_ms=0.0 leaves start_at=None so behaviour is identical
+    # to all callers that predate the staggered/burst workload classes.
+    runner_kickoff = time.monotonic()
+    for s in states:
+        if s.spec.start_offset_ms > 0.0:
+            s.start_at = runner_kickoff + (s.spec.start_offset_ms / 1000.0)
+
+    # Filler+focal accounting:
+    #   * has_focal: at least one focal trace exists.
+    #   * focal_states: only the focal traces.
+    #   * focal_completion_marked: set True once every focal trace is finished.
+    #     After this point the runner stops submitting NEW filler requests but
+    #     keeps stepping the engine to drain in-flight ones (so partial filler
+    #     metrics are still recorded). Without this drain, the run would idle
+    #     for tens of seconds waiting on fillers with hundreds of turns left.
+    focal_states = [s for s in states if s.is_focal]
+    has_focal = len(focal_states) > 0
+    focal_completion_marked = False
+
+    def _all_focal_done() -> bool:
+        return has_focal and all(s.finished for s in focal_states)
+
+    def _all_states_done() -> bool:
+        return all(s.finished for s in states)
+
+    def _any_inflight() -> bool:
+        return any(s.pending_request_id is not None for s in states)
+
     cuda_available = False
     try:
         import torch  # type: ignore
@@ -205,7 +247,22 @@ def run_concurrent(
     real = _is_real_engine(engine)
 
     # ----- Main loop ------------------------------------------------------
-    while not all(s.finished for s in states):
+    while True:
+        # Termination logic:
+        #   - Filler+focal mode: exit once all focal traces are done AND no
+        #     in-flight requests remain (drain phase).
+        #   - All-focal / no-filler mode: original behaviour — exit when every
+        #     state is finished.
+        if has_focal:
+            if _all_focal_done():
+                if not focal_completion_marked:
+                    focal_completion_marked = True
+                if not _any_inflight():
+                    break
+        else:
+            if _all_states_done():
+                break
+
         # 1. Advance each non-pending trace as far as it can go without
         #    exceeding the concurrency budget.
         progress_made = False
@@ -215,6 +272,11 @@ def run_concurrent(
             if state.finished:
                 continue
             if state.pending_request_id is not None:
+                continue
+            # Pre-arrival delay: trace hasn't reached its scheduled start yet.
+            # Skip without marking progress so the no-progress branch decides
+            # whether to sleep until the next wake.
+            if state.start_at is not None and time.monotonic() < state.start_at:
                 continue
             if state.tool_gap_ends is not None:
                 if time.monotonic() >= state.tool_gap_ends:
@@ -230,6 +292,12 @@ def run_concurrent(
             if turn.kind == "user_prompt":
                 # Honour concurrency budget.
                 if active_inflight >= concurrency:
+                    continue
+                # Drain phase: stop submitting new filler requests once focal
+                # is finished, so the run terminates promptly. Focal can
+                # never reach this branch when focal_completion_marked is True
+                # (they are all already finished).
+                if focal_completion_marked and state.is_filler:
                     continue
 
                 prompt = _placeholder_prompt(
@@ -301,12 +369,21 @@ def run_concurrent(
 
         # 3. If we made no progress this iteration, decide whether to wait or stop.
         if not progress_made:
+            now = time.monotonic()
             in_gap = [s for s in states if s.tool_gap_ends is not None]
+            not_yet_started = [
+                s for s in states
+                if s.start_at is not None and now < s.start_at and not s.finished
+            ]
             inflight = sum(1 for s in states if s.pending_request_id is not None)
-            if in_gap:
-                # Sleep until the earliest tool gap ends.
-                next_wake = min(s.tool_gap_ends for s in in_gap)
-                sleep_for = max(0.0, next_wake - time.monotonic())
+            wakes: list[float] = []
+            wakes.extend(s.tool_gap_ends for s in in_gap)
+            wakes.extend(s.start_at for s in not_yet_started)
+            if wakes:
+                # Sleep until the earliest tool gap ends or pre-arrival delay
+                # expires, whichever comes first.
+                next_wake = min(wakes)
+                sleep_for = max(0.0, next_wake - now)
                 time.sleep(min(sleep_for, poll_seconds * 10))
             elif inflight > 0:
                 # vLLM is mid-generation — engine.step() returned without a
@@ -314,6 +391,10 @@ def run_concurrent(
                 # iteration call step() again. This is the common case during
                 # decoding; do NOT break the loop here.
                 time.sleep(poll_seconds)
+            elif focal_completion_marked:
+                # Drain phase with nothing to drain — exit immediately rather
+                # than fall through to the "stuck" branch below.
+                break
             else:
                 # No inflight, no gaps, but states aren't finished — actually stuck.
                 # This indicates a bug; emit a clear marker rather than spin.
@@ -327,6 +408,9 @@ def run_concurrent(
         tr.metadata["tool_latency_dist"] = state.spec.tool_latency_dist
         tr.metadata["concurrency"] = concurrency
         tr.metadata["num_concurrent_specs"] = len(specs)
+        # role is the key field that lets analysis split focal vs filler
+        # latency populations without re-parsing trace_ids.
+        tr.metadata["role"] = state.spec.role
         tr.turns = state.metrics
         results.append(tr)
 
