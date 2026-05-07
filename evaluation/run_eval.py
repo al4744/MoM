@@ -298,15 +298,25 @@ def _compression_ratio_for_mode(mode: str | None) -> float | None:
     return None
 
 
-def _placeholder_prompt(turn: TraceTurn, conversation_so_far: str) -> str:
+def _placeholder_prompt(turn: TraceTurn, conversation_so_far: str,
+                        program_id: str = "") -> str:
     """Render a turn's contribution to the running conversation prompt.
 
     Real prompt content is Workstream C's responsibility (TraceTurn currently
     only carries token counts, not text). For the smoke run we synthesize a
     deterministic placeholder of approximately the right length.
+
+    The user-message header includes ``program_id`` so multiple concurrent
+    agents (in the concurrent runner) see UNIQUE prefixes — without this,
+    replicated traces share identical prompts and vLLM's prefix cache hits
+    at 100% across all agents, masking any cross-agent contention that
+    retention is supposed to mitigate. Within a single trace, turns still
+    share the conversation prefix (intra-conversation reuse, which is what
+    PC is for).
     """
     body = (" foo bar baz " * max(turn.tokens // 3, 1)).strip()
-    return f"{conversation_so_far}\nUSER (turn {turn.turn_index}): {body}\nASSISTANT:"
+    header = f"USER (program={program_id}, turn={turn.turn_index})"
+    return f"{conversation_so_far}\n{header}: {body}\nASSISTANT:"
 
 
 def _make_sampling_params(turn: TraceTurn) -> Any:
@@ -398,7 +408,7 @@ def run_trace(
             if idx + 1 < len(spec.turns):
                 pending_tool_name = spec.turns[idx + 1].tool_name
 
-        prompt = _placeholder_prompt(turn, conversation)
+        prompt = _placeholder_prompt(turn, conversation, program_id=spec.trace_id)
         sp = _make_sampling_params(turn)
 
         phase = "post_tool_prefill" if last_was_tool_return else "prefill"

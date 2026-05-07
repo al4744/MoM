@@ -293,3 +293,76 @@ class TestRealEnginePath:
             assert len(tr.turns) == 3
             for tm in tr.turns:
                 assert tm.ttft_ms == pytest.approx(80.0, abs=5.0)
+
+
+class TestPromptUniqueness:
+    """Regression: prompts for different concurrent agents must NOT be identical.
+
+    If they are, vLLM's prefix cache hits at 100% across all agents and there
+    is no cross-agent contention for retention to mitigate — masking any
+    real difference between PC-only and retention configs.
+    """
+
+    class _CapturingEngine:
+        """Mock engine that records every prompt it receives."""
+        llm_engine = None  # not "real" — drives mock generate path
+
+        def __init__(self) -> None:
+            self.prompts_seen: list[str] = []
+            self._counter = 0
+
+        def generate(self, prompts, sampling_params=None, **kwargs):
+            from evaluation.engine_adapter import (
+                _MockCompletionOutput,
+                _MockMetrics,
+                _MockRequestOutput,
+            )
+            if isinstance(prompts, str):
+                prompts = [prompts]
+            results = []
+            for prompt in prompts:
+                self.prompts_seen.append(prompt)
+                arrival = time.monotonic()
+                results.append(_MockRequestOutput(
+                    request_id=f"capt-{self._counter}",
+                    prompt=prompt,
+                    metrics=_MockMetrics(
+                        arrival_time=arrival,
+                        first_scheduled_time=arrival,
+                        first_token_time=arrival + 0.05,
+                        last_token_time=arrival + 0.10,
+                    ),
+                    outputs=[_MockCompletionOutput(
+                        text="x", token_ids=[1, 2, 3]
+                    )],
+                ))
+                self._counter += 1
+            return results
+
+    def test_concurrent_agents_get_unique_prompts(self) -> None:
+        """Two replicated traces with different trace_ids must produce
+        DIFFERENT prompts at the same turn index — proves trace_id is in
+        the prompt body and PC won't share blocks across agents."""
+        engine = self._CapturingEngine()
+        specs = [
+            fixture_trace(trace_id=f"agent_{i}", num_turns=2, tool_every=999)
+            for i in range(2)
+        ]
+        run_concurrent(engine, specs, cfg={"name": "uniq"}, concurrency=2)
+
+        # 2 traces × 2 turns each = 4 prompts captured.
+        assert len(engine.prompts_seen) == 4
+
+        # Group by turn_index — agents at the same turn must have DIFFERENT prompts.
+        turn0 = [p for p in engine.prompts_seen if "turn=0" in p]
+        assert len(turn0) == 2
+        assert turn0[0] != turn0[1], (
+            "Two agents at turn 0 produced identical prompts — "
+            "trace_id is not being injected into the prompt body. "
+            "vLLM's prefix cache will hit at 100% across agents and "
+            "retention will appear to add no value."
+        )
+
+        # And both should reference their respective program_ids.
+        assert any("agent_0" in p for p in turn0)
+        assert any("agent_1" in p for p in turn0)

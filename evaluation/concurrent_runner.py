@@ -83,9 +83,21 @@ class _TraceState:
 # Helpers (mirrored from run_eval; kept inline so this module is self-contained)
 # ---------------------------------------------------------------------------
 
-def _placeholder_prompt(turn: TraceTurn, conversation: str) -> str:
+def _placeholder_prompt(turn: TraceTurn, conversation: str,
+                        program_id: str = "") -> str:
+    """Render a turn's contribution to the running conversation prompt.
+
+    Includes ``program_id`` in the user-message header so concurrent agents
+    see UNIQUE prefixes — without this, replicated traces share an identical
+    prompt and vLLM's prefix cache hits at 100%, masking any cross-agent
+    contention that retention is supposed to mitigate.
+
+    Within a single trace, turns still legitimately share the conversation
+    prefix (intra-conversation prefix-cache reuse — what PC is for).
+    """
     body = (" foo bar baz " * max(turn.tokens // 3, 1)).strip()
-    return f"{conversation}\nUSER (turn {turn.turn_index}): {body}\nASSISTANT:"
+    header = f"USER (program={program_id}, turn={turn.turn_index})"
+    return f"{conversation}\n{header}: {body}\nASSISTANT:"
 
 
 def _make_sampling_params(turn: TraceTurn) -> Any:
@@ -220,7 +232,9 @@ def run_concurrent(
                 if active_inflight >= concurrency:
                     continue
 
-                prompt = _placeholder_prompt(turn, state.conversation)
+                prompt = _placeholder_prompt(
+                    turn, state.conversation, program_id=state.spec.trace_id
+                )
                 sp = _make_sampling_params(turn)
                 is_pending, next_tool = _next_tool_call(state.spec.turns, state.turn_idx)
                 request_id = (
