@@ -131,4 +131,11 @@ class SingleStepOutputProcessor(SequenceGroupOutputProcessor):
         )
         if seq.is_finished():
             for scheduler in self.scheduler:
+                # Workstream A: skip early free when seq_group will be pinned.
+                # free_seq here runs before _free_finished_seq_group's pin check,
+                # so blocks would be freed before the pin can hold them.
+                if (getattr(scheduler, 'pin_manager', None) is not None
+                        and getattr(seq_group, 'is_tool_call_pending', False)
+                        and getattr(seq_group, 'program_id', None) is not None):
+                    continue
                 scheduler.free_seq(seq)
