@@ -179,3 +179,117 @@ class TestRunConcurrentEdgeCases:
         specs = [fixture_trace(trace_id=f"t{i}", num_turns=2, tool_every=999) for i in range(2)]
         out = run_concurrent(MockEngine(), specs, cfg={"name": "test"}, concurrency=10)
         assert len(out) == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression: fake real-engine step() pattern
+#
+# This is the path that broke during the L4 concurrent matrix run: vLLM's
+# step() returns intermediate (unfinished) outputs while it's mid-decode,
+# and the runner was incorrectly treating "no finished outputs this step"
+# as "stuck" → break, producing empty TurnMetrics arrays.
+#
+# The fake engine here exposes a `.llm_engine` attribute (so _is_real_engine
+# returns True) and emulates the multi-step pattern where it takes N step()
+# calls before output.finished is True for a given request.
+# ---------------------------------------------------------------------------
+
+class _FakeRealEngine:
+    """Mimics enough of vllm.LLM to exercise the engine.llm_engine.add_request
+    + engine.llm_engine.step() path in concurrent_runner.
+
+    Each request takes ``steps_per_request`` step() invocations to finish.
+    During those intermediate steps, step() returns either an empty list or
+    an unfinished output (depending on the mode), which is exactly what
+    triggered the production bug.
+    """
+
+    def __init__(self, steps_per_request: int = 3, ttft_ms: float = 50.0,
+                 per_token_ms: float = 5.0, n_output_tokens: int = 4):
+        self.llm_engine = self  # so concurrent_runner detects "real engine"
+        self._pending = {}      # request_id → steps remaining
+        self._params = {}       # request_id → (arrival_time, prompt)
+        self.steps_per_request = steps_per_request
+        self.ttft_ms = ttft_ms
+        self.per_token_ms = per_token_ms
+        self.n_output_tokens = n_output_tokens
+
+    def add_request(self, request_id, prompt, sampling_params, **_kwargs):
+        self._pending[request_id] = self.steps_per_request
+        self._params[request_id] = (time.monotonic(), prompt)
+
+    def step(self):
+        from evaluation.engine_adapter import (
+            _MockCompletionOutput,
+            _MockMetrics,
+            _MockRequestOutput,
+        )
+        outputs = []
+        finished_ids = []
+        for rid, remaining in list(self._pending.items()):
+            self._pending[rid] = remaining - 1
+            if self._pending[rid] <= 0:
+                # Synthesize a finished output with realistic metrics
+                arrival, prompt = self._params[rid]
+                first_token = arrival + self.ttft_ms / 1000.0
+                last_token = first_token + (self.n_output_tokens * self.per_token_ms / 1000.0)
+                outputs.append(_MockRequestOutput(
+                    request_id=rid,
+                    prompt=prompt,
+                    metrics=_MockMetrics(
+                        arrival_time=arrival,
+                        first_scheduled_time=arrival,
+                        first_token_time=first_token,
+                        last_token_time=last_token,
+                        time_in_queue=0.0,
+                        finished_time=last_token,
+                    ),
+                    outputs=[_MockCompletionOutput(
+                        text="x " * self.n_output_tokens,
+                        token_ids=list(range(self.n_output_tokens)),
+                    )],
+                    finished=True,
+                ))
+                finished_ids.append(rid)
+        for rid in finished_ids:
+            del self._pending[rid]
+            del self._params[rid]
+        # Intermediate steps return EMPTY list — this is the case the buggy
+        # version mishandled (treated empty step output as "stuck").
+        return outputs
+
+
+class TestRealEnginePath:
+    def test_multistep_finish_does_not_break_loop(self) -> None:
+        """Reproduces the L4 production bug: real engine takes multiple step()
+        calls per request. The buggy version exited the loop on the first
+        empty step() and produced 0 turns. The fix should produce per-turn
+        metrics for every user_prompt."""
+        engine = _FakeRealEngine(steps_per_request=5)
+        spec = fixture_trace(num_turns=4, tool_every=999)  # all user_prompt
+        out = run_concurrent(engine, [spec], cfg={"name": "regress"}, concurrency=1)
+
+        assert len(out) == 1
+        assert len(out[0].turns) == 4, (
+            f"Expected 4 turn metrics, got {len(out[0].turns)} — "
+            "runner exited before vLLM step loop finished requests."
+        )
+        for tm in out[0].turns:
+            assert tm.ttft_ms > 0, f"ttft_ms should be > 0 from real-engine path, got {tm.ttft_ms}"
+            assert tm.ttft_ms != -1.0
+
+    def test_concurrent_traces_through_multistep_engine(self) -> None:
+        """Multiple traces concurrently with multi-step engine → all traces
+        should produce full TurnMetrics arrays."""
+        engine = _FakeRealEngine(steps_per_request=3, ttft_ms=80.0)
+        specs = [
+            fixture_trace(trace_id=f"agent{i}", num_turns=3, tool_every=999)
+            for i in range(4)
+        ]
+        out = run_concurrent(engine, specs, cfg={"name": "regress"}, concurrency=4)
+
+        assert len(out) == 4
+        for tr in out:
+            assert len(tr.turns) == 3
+            for tm in tr.turns:
+                assert tm.ttft_ms == pytest.approx(80.0, abs=5.0)

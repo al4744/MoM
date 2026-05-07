@@ -285,16 +285,24 @@ def run_concurrent(
                         _handle_finished(state, output, completion_time)
                         progress_made = True
 
-        # 3. If we made no progress, sleep briefly to let tool gaps elapse.
+        # 3. If we made no progress this iteration, decide whether to wait or stop.
         if not progress_made:
             in_gap = [s for s in states if s.tool_gap_ends is not None]
+            inflight = sum(1 for s in states if s.pending_request_id is not None)
             if in_gap:
+                # Sleep until the earliest tool gap ends.
                 next_wake = min(s.tool_gap_ends for s in in_gap)
-                sleep = max(0.0, next_wake - time.monotonic())
-                time.sleep(min(sleep, poll_seconds * 10))
+                sleep_for = max(0.0, next_wake - time.monotonic())
+                time.sleep(min(sleep_for, poll_seconds * 10))
+            elif inflight > 0:
+                # vLLM is mid-generation — engine.step() returned without a
+                # finished output yet. Yield CPU briefly and let the next
+                # iteration call step() again. This is the common case during
+                # decoding; do NOT break the loop here.
+                time.sleep(poll_seconds)
             else:
-                # No progress, no gaps — should be impossible if `finished` is correct.
-                # Safety break.
+                # No inflight, no gaps, but states aren't finished — actually stuck.
+                # This indicates a bug; emit a clear marker rather than spin.
                 break
 
     # ----- Build TraceResults --------------------------------------------
