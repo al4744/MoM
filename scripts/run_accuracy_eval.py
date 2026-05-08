@@ -149,17 +149,37 @@ def _maybe_inject_retention_config(cfg: dict[str, Any]) -> None:
     _VLLM.__init__ = _patched_init  # type: ignore[method-assign]
 
 
+# Metric keys lm-eval-harness uses, in priority order. Multiple-choice tasks
+# (mmlu, hellaswag, arc) emit acc/acc_norm; gsm8k emits exact_match,
+# strict-match / flexible-extract; bbh subtasks vary. Match
+# scripts/compare_accuracy.py's order so a single config's mean here matches
+# the per-task numbers in the cross-config diff.
+_ACCURACY_METRIC_HEADS = ("acc", "acc_norm", "exact_match")
+
+
 def _extract_mean_accuracy(results: dict[str, Any]) -> float | None:
-    """Return the unweighted mean of all ``acc`` / ``acc,none`` metrics."""
+    """Return the unweighted mean of all task-level accuracy metrics.
+
+    For each task, picks the first metric whose name's head matches one of
+    ``acc`` / ``acc_norm`` / ``exact_match`` (in that priority order). This
+    avoids double-counting when a single task emits both
+    ``exact_match,strict-match`` and ``exact_match,flexible-extract``.
+    """
     accs: list[float] = []
     for _task_name, metrics in (results.get("results") or {}).items():
-        for metric_name, value in metrics.items():
-            if not isinstance(value, (int, float)):
-                continue
-            # lm_eval keys look like "acc,none" or "acc_norm,none".
-            head = metric_name.split(",")[0]
-            if head in {"acc", "acc_norm"}:
-                accs.append(float(value))
+        # Within one task, find the highest-priority head that has a value.
+        chosen: float | None = None
+        for head in _ACCURACY_METRIC_HEADS:
+            for metric_name, value in metrics.items():
+                if not isinstance(value, (int, float)):
+                    continue
+                if metric_name.split(",")[0] == head:
+                    chosen = float(value)
+                    break
+            if chosen is not None:
+                break
+        if chosen is not None:
+            accs.append(chosen)
     if not accs:
         return None
     return sum(accs) / len(accs)

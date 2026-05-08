@@ -20,7 +20,7 @@ CONFIGS := $(wildcard configs/*.yaml)
 .PHONY: test test-quick eval-baseline eval-retention eval-all eval-all-real smoke smoke-baseline smoke-retention workstream-c-smoke compare compare-real ablate ablate-real clean \
         eval-concurrent eval-filler-focal eval-filler-focal-large \
         eval-tier2 eval-tier2-lockstep eval-tier2-staggered eval-tier2-heterogeneous eval-tier2-burst eval-tier2-filler-focal eval-tier2-large \
-        eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4 eval-accuracy-all \
+        eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4 eval-accuracy-all eval-accuracy-with-quant \
         eval-comprehensive eval-comprehensive-large
 
 # ----------------------------------------------------------------------------
@@ -342,7 +342,19 @@ eval-accuracy-int4:
 		--output $(ACC_RESULTS)/retention_int4 \
 		--task-suite $(ACC_TASK_SUITE) --limit $(ACC_LIMIT)
 
-eval-accuracy-all: eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4
+# Default accuracy battery: baseline + retention only.
+# INT8/INT4 KV-cache quantization (Workstream B) goes through a custom kwarg
+# path that lm-eval-harness's vllm_causallms wrapper doesn't traverse —
+# vLLM 0.6.4's stock kv_cache_dtype validator rejects "int8"/"int4". Run
+# eval-accuracy-with-quant once Workstream B's lm-eval integration lands.
+eval-accuracy-all: eval-accuracy-baseline eval-accuracy-retention
+	PYTHONPATH=. $(PYTHON) scripts/compare_accuracy.py \
+		$(ACC_RESULTS)/baseline \
+		$(ACC_RESULTS)/retention \
+		--baseline-name baseline | tee $(ACC_RESULTS)/comparison.md
+
+# Includes INT8/INT4 — currently fails on stock vLLM 0.6.4 (see note above).
+eval-accuracy-with-quant: eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4
 	PYTHONPATH=. $(PYTHON) scripts/compare_accuracy.py \
 		$(ACC_RESULTS)/baseline \
 		$(ACC_RESULTS)/retention \

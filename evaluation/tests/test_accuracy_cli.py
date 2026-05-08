@@ -95,6 +95,57 @@ class TestBuildVllmKwargs:
         assert kwargs["gpu_memory_utilization"] == 0.85
 
 
+class TestExtractMeanAccuracy:
+    """Regression: _extract_mean_accuracy returned None for gsm8k+bbh runs
+    because it only matched acc/acc_norm metric heads, not exact_match.
+    First production accuracy run logged 'no acc/acc_norm metrics found
+    in results' for both baseline and retention configs."""
+
+    def test_handles_acc_metric(self) -> None:
+        import run_accuracy_eval
+        results = {"results": {"mmlu": {"acc,none": 0.50}}}
+        assert run_accuracy_eval._extract_mean_accuracy(results) == 0.50
+
+    def test_handles_exact_match_for_gsm8k(self) -> None:
+        import run_accuracy_eval
+        results = {"results": {"gsm8k": {
+            "exact_match,strict-match": 0.40,
+            "exact_match,flexible-extract": 0.45,
+        }}}
+        # Should pick exact_match (strict-match first), giving 0.40
+        assert run_accuracy_eval._extract_mean_accuracy(results) == 0.40
+
+    def test_no_double_counting_within_task(self) -> None:
+        """A single task with both acc and exact_match should contribute
+        ONE value to the mean, not two."""
+        import run_accuracy_eval
+        results = {"results": {"weird_task": {
+            "acc,none": 0.50,
+            "exact_match,strict-match": 0.30,
+        }}}
+        # Picks acc (higher priority), value=0.50, mean=0.50 (not avg of both)
+        assert run_accuracy_eval._extract_mean_accuracy(results) == 0.50
+
+    def test_averages_across_tasks(self) -> None:
+        import run_accuracy_eval
+        results = {"results": {
+            "mmlu":  {"acc,none": 0.50},
+            "gsm8k": {"exact_match,strict-match": 0.30},
+        }}
+        # Mean of 0.50 and 0.30
+        assert run_accuracy_eval._extract_mean_accuracy(results) == pytest.approx(0.40)
+
+    def test_returns_none_when_no_metrics(self) -> None:
+        import run_accuracy_eval
+        results = {"results": {"task": {"some_other_metric": 0.5}}}
+        assert run_accuracy_eval._extract_mean_accuracy(results) is None
+
+    def test_returns_none_for_empty_results(self) -> None:
+        import run_accuracy_eval
+        assert run_accuracy_eval._extract_mean_accuracy({"results": {}}) is None
+        assert run_accuracy_eval._extract_mean_accuracy({}) is None
+
+
 class TestAccuracyParseArgs:
     def test_default_falls_back_to_mmlu(self, monkeypatch) -> None:
         import run_accuracy_eval
@@ -170,6 +221,31 @@ class TestCompareAccuracy:
         blob = {"results": {"hellaswag": {"acc_norm,none": 0.78}}}
         out = compare_accuracy._extract_per_task(blob)
         assert out == {"hellaswag": 0.78}
+
+    def test_extract_per_task_handles_gsm8k_exact_match(self) -> None:
+        """Regression: gsm8k uses exact_match,strict-match instead of acc.
+        First production accuracy run logged 'no acc/acc_norm metrics found'
+        because we only checked acc/acc_norm."""
+        import compare_accuracy
+        blob = {"results": {"gsm8k": {
+            "exact_match,strict-match": 0.36,
+            "exact_match,flexible-extract": 0.42,
+        }}}
+        out = compare_accuracy._extract_per_task(blob)
+        # Should pick strict-match (higher priority in our metric order)
+        assert out == {"gsm8k": 0.36}
+
+    def test_extract_per_task_handles_bbh_mixed_metrics(self) -> None:
+        """BBH subtasks vary; some use acc, some exact_match. Make sure we
+        pick the right one per-task without double-counting."""
+        import compare_accuracy
+        blob = {"results": {
+            "bbh_logical_deduction":  {"acc,none": 0.45},
+            "bbh_word_sorting":       {"exact_match,flexible-extract": 0.30},
+        }}
+        out = compare_accuracy._extract_per_task(blob)
+        assert out == {"bbh_logical_deduction": 0.45,
+                       "bbh_word_sorting": 0.30}
 
     def test_extract_per_task_skips_non_numeric(self) -> None:
         import compare_accuracy

@@ -52,16 +52,35 @@ def _load_accuracy(result_dir: Path) -> dict:
         return json.load(f)
 
 
+# Metric keys lm-eval-harness uses, in priority order. Multiple-choice tasks
+# (mmlu, hellaswag, arc) emit ``acc,none``; gsm8k emits
+# ``exact_match,strict-match`` and ``exact_match,flexible-extract``; bbh
+# subtasks vary across all of these. We try them in order and pick the first
+# present.
+_ACCURACY_METRIC_KEYS = (
+    "acc,none",
+    "acc_norm,none",
+    "exact_match,strict-match",
+    "exact_match,flexible-extract",
+    "exact_match,none",
+)
+
+
 def _extract_per_task(blob: dict) -> dict[str, float]:
-    """Pull (task_name → accuracy) from one accuracy.json blob."""
+    """Pull (task_name → accuracy) from one accuracy.json blob.
+
+    lm-eval emits different metric keys per task family. We probe a fixed
+    priority order and take the first hit. Tasks that emit *none* of these
+    keys (rare — typically generation-style with no accuracy notion) are
+    silently skipped.
+    """
     out: dict[str, float] = {}
     for task_name, metrics in (blob.get("results") or {}).items():
-        # lm-eval uses keys like "acc,none" or "acc_norm,none".
-        acc = metrics.get("acc,none")
-        if acc is None:
-            acc = metrics.get("acc_norm,none")
-        if isinstance(acc, (int, float)):
-            out[task_name] = float(acc)
+        for key in _ACCURACY_METRIC_KEYS:
+            v = metrics.get(key)
+            if isinstance(v, (int, float)):
+                out[task_name] = float(v)
+                break
     return out
 
 
