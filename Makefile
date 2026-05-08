@@ -18,10 +18,10 @@ REAL_RESULTS ?= results_quant
 CONFIGS := $(wildcard configs/*.yaml)
 
 .PHONY: test test-quick eval-baseline eval-retention eval-all eval-all-real smoke smoke-baseline smoke-retention workstream-c-smoke compare compare-real ablate ablate-real clean \
-        eval-concurrent eval-filler-focal \
-        eval-tier2 eval-tier2-lockstep eval-tier2-staggered eval-tier2-heterogeneous eval-tier2-burst eval-tier2-filler-focal \
+        eval-concurrent eval-filler-focal eval-filler-focal-large \
+        eval-tier2 eval-tier2-lockstep eval-tier2-staggered eval-tier2-heterogeneous eval-tier2-burst eval-tier2-filler-focal eval-tier2-large \
         eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4 eval-accuracy-all \
-        eval-comprehensive
+        eval-comprehensive eval-comprehensive-large
 
 # ----------------------------------------------------------------------------
 # Tests
@@ -207,6 +207,17 @@ eval-filler-focal:
 NUM_AGENTS ?= 8
 NUM_USER_PROMPTS ?= 4
 TOOL_LATENCY_MS ?= 2000
+# Arrival rate for staggered (Poisson). Default 0.5/s is calibrated for the
+# 8-agent regime; bump to 5.0/s when running at NUM_AGENTS≥30 so agents
+# actually overlap (otherwise total spread ≫ per-agent runtime → effectively
+# sequential, no contention).
+ARRIVAL_RATE_PER_SEC ?= 0.5
+# Burst window for burst (uniform). Default 500ms keeps an 8-agent burst
+# tight; bump to 5000ms at scale so some agents are mid-prefill while others
+# enter tool gaps (otherwise everyone pauses together → no eviction force).
+BURST_DURATION_MS ?= 500
+HETERO_LOG_MEAN_MS ?= 1500
+HETERO_LOG_SIGMA ?= 0.7
 TIER2_RESULTS ?= results/tier2-$(shell date +%Y%m%d-%H%M%S)
 
 eval-tier2-lockstep:
@@ -230,7 +241,7 @@ eval-tier2-staggered:
 			--num-agents $(NUM_AGENTS) \
 			--num-user-prompts $(NUM_USER_PROMPTS) \
 			--tool-latency-ms $(TOOL_LATENCY_MS) \
-			--arrival-rate-per-sec 0.5 \
+			--arrival-rate-per-sec $(ARRIVAL_RATE_PER_SEC) \
 			--concurrency $(NUM_AGENTS); \
 	done
 
@@ -242,8 +253,8 @@ eval-tier2-heterogeneous:
 			--workload-class heterogeneous \
 			--num-agents $(NUM_AGENTS) \
 			--num-user-prompts $(NUM_USER_PROMPTS) \
-			--tool-latency-log-mean-ms 1500 \
-			--tool-latency-log-sigma 0.7 \
+			--tool-latency-log-mean-ms $(HETERO_LOG_MEAN_MS) \
+			--tool-latency-log-sigma $(HETERO_LOG_SIGMA) \
 			--concurrency $(NUM_AGENTS); \
 	done
 
@@ -256,7 +267,7 @@ eval-tier2-burst:
 			--num-agents $(NUM_AGENTS) \
 			--num-user-prompts $(NUM_USER_PROMPTS) \
 			--tool-latency-ms $(TOOL_LATENCY_MS) \
-			--burst-duration-ms 500 \
+			--burst-duration-ms $(BURST_DURATION_MS) \
 			--concurrency $(NUM_AGENTS); \
 	done
 
@@ -267,6 +278,35 @@ eval-tier2: eval-tier2-lockstep eval-tier2-staggered eval-tier2-heterogeneous ev
 	@echo ""
 	@echo "=== Tier 2 battery complete ==="
 	@echo "  results: $(TIER2_RESULTS)"
+
+# ----------------------------------------------------------------------------
+# H100-scale convenience targets
+# ----------------------------------------------------------------------------
+# Pre-calibrated for ~80GB GPUs running 50–60 concurrent agents at
+# gpu_memory_utilization=0.85. Reproduces the conditions retention was
+# designed for (sustained eviction pressure, real concurrent multi-agent
+# contention) without manually overriding 6 different make variables.
+#
+# Usage:
+#   make eval-filler-focal-large    # 60 fillers, 8 focal turns (n=7 post-tool)
+#   make eval-tier2-large           # 50 agents, scale-appropriate spread
+#   make eval-comprehensive-large   # filler+focal-large + tier2-large + accuracy
+
+eval-filler-focal-large:
+	@$(MAKE) eval-filler-focal \
+		NUM_FILLERS=60 \
+		FOCAL_NUM_TURNS=8 \
+		FOCAL_TOOL_LATENCY_MS=5000
+
+eval-tier2-large:
+	@$(MAKE) eval-tier2 \
+		NUM_AGENTS=50 \
+		ARRIVAL_RATE_PER_SEC=5.0 \
+		BURST_DURATION_MS=5000
+
+eval-comprehensive-large: eval-filler-focal-large eval-tier2-large eval-accuracy-all
+	@echo ""
+	@echo "=== Comprehensive battery (H100-scale) complete ==="
 
 # ----------------------------------------------------------------------------
 # Accuracy battery — proxy for AgentBench / ToolBench reasoning capability.

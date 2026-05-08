@@ -105,6 +105,12 @@ def _build_vllm_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
         "dtype": model_cfg.get("dtype", "auto"),
         "max_model_len": model_cfg.get("max_model_len", 8192),
         "gpu_memory_utilization": model_cfg.get("gpu_memory_utilization", 0.9),
+        # vLLM 0.6.4's SchedulerConfig._verify_args fails when max_num_seqs
+        # arrives as None (lm-eval's vllm_causallms wrapper passes it through
+        # without defaulting). Force a concrete int to short-circuit the
+        # `max_num_batched_tokens < max_num_seqs` comparison crash. 256 is
+        # vLLM's own default for batched serving.
+        "max_num_seqs": model_cfg.get("max_num_seqs", 256),
     }
 
     if engine_cfg.get("prefix_caching", {}).get("enabled"):

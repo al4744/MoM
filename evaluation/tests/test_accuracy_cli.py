@@ -46,6 +46,55 @@ class TestTaskSuites:
             assert task in agentic
 
 
+class TestBuildVllmKwargs:
+    """Regression: vLLM 0.6.4 SchedulerConfig._verify_args fails when
+    max_num_seqs is None (lm-eval's vllm_causallms wrapper passes it
+    through without defaulting). Without an explicit default in our
+    kwargs builder, the comparison `max_num_batched_tokens < max_num_seqs`
+    raises TypeError. This test pins the fix in place.
+    """
+
+    def test_max_num_seqs_always_present(self) -> None:
+        import run_accuracy_eval
+        cfg = {"model": {"name": "meta-llama/Meta-Llama-3-8B"}}
+        kwargs = run_accuracy_eval._build_vllm_kwargs(cfg)
+        assert "max_num_seqs" in kwargs, (
+            "max_num_seqs missing from vLLM kwargs — lm-eval call will crash "
+            "in vLLM 0.6.4 SchedulerConfig._verify_args."
+        )
+        assert isinstance(kwargs["max_num_seqs"], int)
+        assert kwargs["max_num_seqs"] > 0
+
+    def test_max_num_seqs_default_is_256(self) -> None:
+        import run_accuracy_eval
+        cfg = {"model": {"name": "x"}}
+        kwargs = run_accuracy_eval._build_vllm_kwargs(cfg)
+        assert kwargs["max_num_seqs"] == 256
+
+    def test_max_num_seqs_overridable_from_yaml(self) -> None:
+        import run_accuracy_eval
+        cfg = {"model": {"name": "x", "max_num_seqs": 64}}
+        kwargs = run_accuracy_eval._build_vllm_kwargs(cfg)
+        assert kwargs["max_num_seqs"] == 64
+
+    def test_existing_kwargs_still_present(self) -> None:
+        """Don't accidentally drop pretrained/dtype/etc."""
+        import run_accuracy_eval
+        cfg = {
+            "model": {
+                "name": "meta-llama/Meta-Llama-3-8B",
+                "dtype": "float16",
+                "max_model_len": 4096,
+                "gpu_memory_utilization": 0.85,
+            }
+        }
+        kwargs = run_accuracy_eval._build_vllm_kwargs(cfg)
+        assert kwargs["pretrained"] == "meta-llama/Meta-Llama-3-8B"
+        assert kwargs["dtype"] == "float16"
+        assert kwargs["max_model_len"] == 4096
+        assert kwargs["gpu_memory_utilization"] == 0.85
+
+
 class TestAccuracyParseArgs:
     def test_default_falls_back_to_mmlu(self, monkeypatch) -> None:
         import run_accuracy_eval
