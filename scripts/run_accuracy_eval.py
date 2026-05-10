@@ -116,8 +116,13 @@ def _build_vllm_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
     if engine_cfg.get("prefix_caching", {}).get("enabled"):
         kwargs["enable_prefix_caching"] = True
 
+    # NOTE: vLLM 0.6.4's stock kv_cache_dtype validator only accepts
+    # auto/fp8/fp8_e4m3/fp8_e5m2. Workstream B's INT8/INT4 KV quantization
+    # is wired through a custom kwarg `kv_quant_config` (see
+    # _maybe_inject_kv_quant_config below), NOT through kv_cache_dtype.
+    # We only forward kv_cache_dtype here for stock vLLM-recognised values.
     quant = engine_cfg.get("quantization", {}).get("kv_cache")
-    if quant:
+    if quant in {"fp8", "fp8_e4m3", "fp8_e5m2"}:
         kwargs["kv_cache_dtype"] = quant
 
     return kwargs
@@ -144,6 +149,46 @@ def _maybe_inject_retention_config(cfg: dict[str, Any]) -> None:
 
     def _patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         kwargs.setdefault("retention_config", retention_config)
+        return original_init(self, *args, **kwargs)
+
+    _VLLM.__init__ = _patched_init  # type: ignore[method-assign]
+
+
+def _maybe_inject_kv_quant_config(cfg: dict[str, Any]) -> None:
+    """Patch lm_eval's VLLM class to forward Workstream B's kv_quant_config.
+
+    Mirrors ``_maybe_inject_retention_config`` but for INT8/INT4 KV cache
+    quantization. Workstream B's quantization wires through a custom kwarg
+    (``kv_quant_config``, a ``KVQuantConfig`` dataclass), NOT through vLLM's
+    stock ``kv_cache_dtype`` API which rejects 'int8'/'int4' as unknown
+    precision modes.
+
+    No-op when quantization is disabled. When enabled, builds the
+    ``KVQuantConfig`` via the same helper ``engine_adapter.build_real_engine``
+    uses, then monkey-patches ``VLLM.__init__`` so the config flows into
+    ``LLM(...)`` at construction time.
+
+    Composes with retention: if both retention and quantization are enabled,
+    both inject patches (each setdefault-s its own kwarg), so the final
+    ``LLM(...)`` call receives both ``retention_config`` and ``kv_quant_config``.
+    """
+    try:
+        from src.quantization.config import load_kv_quant_config
+    except ImportError:
+        return  # Workstream B's module not on PYTHONPATH — nothing to inject
+
+    quant_dict = cfg.get("engine", {}).get("quantization")
+    quant_cfg = load_kv_quant_config(quant_dict)
+    if not quant_cfg.enabled:
+        return
+
+    # Lazy import to avoid hitting CUDA at module load.
+    from lm_eval.models.vllm_causallms import VLLM as _VLLM
+
+    original_init = _VLLM.__init__
+
+    def _patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.setdefault("kv_quant_config", quant_cfg)
         return original_init(self, *args, **kwargs)
 
     _VLLM.__init__ = _patched_init  # type: ignore[method-assign]
@@ -267,6 +312,7 @@ def main() -> int:
     cfg = _load_yaml(args.config)
     vllm_kwargs = _build_vllm_kwargs(cfg)
     _maybe_inject_retention_config(cfg)
+    _maybe_inject_kv_quant_config(cfg)
 
     print(f"=== {args.config.stem} ===")
     print(f"  tasks   : {args.tasks}  ({getattr(args, '_tasks_origin', '?')})")

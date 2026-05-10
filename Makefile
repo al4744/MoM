@@ -20,8 +20,8 @@ CONFIGS := $(wildcard configs/*.yaml)
 .PHONY: test test-quick eval-baseline eval-retention eval-all eval-all-real smoke smoke-baseline smoke-retention workstream-c-smoke compare compare-real ablate ablate-real clean \
         eval-concurrent eval-filler-focal eval-filler-focal-large \
         eval-tier2 eval-tier2-lockstep eval-tier2-staggered eval-tier2-heterogeneous eval-tier2-burst eval-tier2-filler-focal eval-tier2-large \
-        eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4 eval-accuracy-all eval-accuracy-with-quant \
-        eval-comprehensive eval-comprehensive-large
+        eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4 eval-accuracy-all eval-accuracy-fp16 \
+        eval-comprehensive eval-comprehensive-large eval-throughput-sweep
 
 # ----------------------------------------------------------------------------
 # Tests
@@ -309,6 +309,46 @@ eval-comprehensive-large: eval-filler-focal-large eval-tier2-large eval-accuracy
 	@echo "=== Comprehensive battery (H100-scale) complete ==="
 
 # ----------------------------------------------------------------------------
+# Throughput saturation sweep (Path B) — open-loop measurement
+# ----------------------------------------------------------------------------
+# Sweeps arrival rate λ and finds the saturation rate at a given SLO.
+# Reuses the staggered workload class for Poisson arrivals; per-rate runs
+# share num_agents and tool_latency_ms so the only sweep variable is λ.
+#
+# Headline metric: saturation_rate_at_slo (largest λ where p95 post-tool
+# TTFT < SLO_MS) per config. The (PC-only → retention) delta is the
+# throughput-equivalent benefit of pin-or-evict.
+#
+# Usage:
+#   make eval-throughput-sweep                                  # default rates 1,2,4,8,16 RPS
+#   make eval-throughput-sweep ARRIVAL_RATES=0.5,1,2,4,8,16,32  # custom grid
+#   make eval-throughput-sweep SLO_MS=200                       # tighter SLO
+#
+# Time on H100 80GB: ~3 min per (config, rate) at num_agents=200 →
+# 5 rates × 3 configs × 3 min = ~45 min total.
+
+ARRIVAL_RATES ?= 1,2,4,8,16
+SLO_MS ?= 500
+SWEEP_NUM_AGENTS ?= 200
+SWEEP_NUM_USER_PROMPTS ?= 4
+SWEEP_TOOL_LATENCY_MS ?= 2000
+SWEEP_BODY_TOKENS ?= 2048
+SWEEP_RESULTS ?= results/throughput-sweep-$(shell date +%Y%m%d-%H%M%S)
+
+eval-throughput-sweep:
+	PYTHONPATH=. $(PYTHON) scripts/run_throughput_sweep.py \
+		--output $(SWEEP_RESULTS) \
+		--arrival-rates $(ARRIVAL_RATES) \
+		--slo-ms $(SLO_MS) \
+		--num-agents $(SWEEP_NUM_AGENTS) \
+		--num-user-prompts $(SWEEP_NUM_USER_PROMPTS) \
+		--tool-latency-ms $(SWEEP_TOOL_LATENCY_MS) \
+		--body-tokens $(SWEEP_BODY_TOKENS)
+	@echo ""
+	@echo "=== Saturation curve in $(SWEEP_RESULTS)/saturation_curve.md ==="
+	@cat $(SWEEP_RESULTS)/saturation_curve.md
+
+# ----------------------------------------------------------------------------
 # Accuracy battery — proxy for AgentBench / ToolBench reasoning capability.
 # ----------------------------------------------------------------------------
 # Runs lm-eval-harness on each retention/quant config, then diffs accuracy
@@ -342,24 +382,24 @@ eval-accuracy-int4:
 		--output $(ACC_RESULTS)/retention_int4 \
 		--task-suite $(ACC_TASK_SUITE) --limit $(ACC_LIMIT)
 
-# Default accuracy battery: baseline + retention only.
-# INT8/INT4 KV-cache quantization (Workstream B) goes through a custom kwarg
-# path that lm-eval-harness's vllm_causallms wrapper doesn't traverse —
-# vLLM 0.6.4's stock kv_cache_dtype validator rejects "int8"/"int4". Run
-# eval-accuracy-with-quant once Workstream B's lm-eval integration lands.
-eval-accuracy-all: eval-accuracy-baseline eval-accuracy-retention
-	PYTHONPATH=. $(PYTHON) scripts/compare_accuracy.py \
-		$(ACC_RESULTS)/baseline \
-		$(ACC_RESULTS)/retention \
-		--baseline-name baseline | tee $(ACC_RESULTS)/comparison.md
-
-# Includes INT8/INT4 — currently fails on stock vLLM 0.6.4 (see note above).
-eval-accuracy-with-quant: eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4
+# Full accuracy battery — baseline, retention, and INT8/INT4 quantized configs.
+# INT8/INT4 are forwarded to vLLM via Workstream B's custom kv_quant_config
+# kwarg, which run_accuracy_eval.py injects through a monkey-patch of
+# lm_eval's VLLM.__init__ (mirroring how retention_config is injected).
+# Pre-requisite: src.quantization must be importable (PYTHONPATH=.).
+eval-accuracy-all: eval-accuracy-baseline eval-accuracy-retention eval-accuracy-int8 eval-accuracy-int4
 	PYTHONPATH=. $(PYTHON) scripts/compare_accuracy.py \
 		$(ACC_RESULTS)/baseline \
 		$(ACC_RESULTS)/retention \
 		$(ACC_RESULTS)/retention_int8 \
 		$(ACC_RESULTS)/retention_int4 \
+		--baseline-name baseline | tee $(ACC_RESULTS)/comparison.md
+
+# FP16-only fallback (skips INT8/INT4) — use if quantization wiring breaks.
+eval-accuracy-fp16: eval-accuracy-baseline eval-accuracy-retention
+	PYTHONPATH=. $(PYTHON) scripts/compare_accuracy.py \
+		$(ACC_RESULTS)/baseline \
+		$(ACC_RESULTS)/retention \
 		--baseline-name baseline | tee $(ACC_RESULTS)/comparison.md
 
 # ----------------------------------------------------------------------------
