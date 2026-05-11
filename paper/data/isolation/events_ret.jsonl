@@ -1,0 +1,2 @@
+{"event_type": "pin", "monotonic_ts": 1180.537353561, "wallclock_ts": 1778443930.3880475, "program_id": "agent_a", "tool_name": "tool_x", "num_blocks": 180, "ttl_assigned": 22.5, "observed_duration": null, "current_pinned_count": 1, "current_pinned_blocks": 180}
+{"event_type": "reuse", "monotonic_ts": 1190.121828158, "wallclock_ts": 1778443939.9725223, "program_id": "agent_a", "tool_name": "tool_x", "num_blocks": 180, "ttl_assigned": null, "observed_duration": 9.58447550599999, "current_pinned_count": 0, "current_pinned_blocks": 0}
